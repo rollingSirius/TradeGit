@@ -11,10 +11,14 @@ No token is ever written into the config file or the journal repo.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import re
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +35,17 @@ class SyncError(RuntimeError):
     pass
 
 
+def redact(text: str) -> str:
+    """Strip anything token-shaped before it reaches a message or a log."""
+    if not text:
+        return text
+    secret = token()
+    if secret and secret in text:
+        text = text.replace(secret, "***")
+    # Also catch credentials embedded in a URL by some other layer.
+    return re.sub(r"(https?://)[^/\s:@]+:[^/\s@]+@", r"\1***:***@", text)
+
+
 def run(args: list[str], cwd: Path | None = None, *, check: bool = True,
         env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     proc = subprocess.run(
@@ -38,8 +53,9 @@ def run(args: list[str], cwd: Path | None = None, *, check: bool = True,
         env={**os.environ, **(env or {})},
     )
     if check and proc.returncode != 0:
-        raise SyncError(
-            f"command failed: {' '.join(args)}\n{proc.stderr.strip() or proc.stdout.strip()}")
+        raise SyncError(redact(
+            f"command failed: {' '.join(args)}\n"
+            f"{proc.stderr.strip() or proc.stdout.strip()}"))
     return proc
 
 
@@ -55,7 +71,9 @@ def gh_available() -> bool:
     return shutil.which("gh") is not None
 
 
+@functools.lru_cache(maxsize=1)
 def gh_authenticated() -> bool:
+    """Cached: every network git call asks, and `gh auth status` forks."""
     if not gh_available():
         return False
     return run(["gh", "auth", "status"], check=False).returncode == 0
@@ -72,16 +90,21 @@ def github_user() -> str | None:
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip()
     tok = token()
-    if tok and shutil.which("curl"):
-        proc = run(["curl", "-sS", "-H", f"Authorization: Bearer {tok}",
-                    "-H", "Accept: application/vnd.github+json",
-                    "https://api.github.com/user"], check=False)
-        if proc.returncode == 0:
-            try:
-                return json.loads(proc.stdout).get("login")
-            except json.JSONDecodeError:
-                return None
-    return None
+    if not tok:
+        return None
+    # Deliberately not curl: a token in argv is readable via `ps` by any
+    # other user on the machine. urllib keeps it in this process only.
+    request = urllib.request.Request(
+        "https://api.github.com/user",
+        headers={"Authorization": f"Bearer {tok}",
+                 "Accept": "application/vnd.github+json",
+                 "User-Agent": "tradegit"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.loads(response.read()).get("login")
+    except (urllib.error.URLError, json.JSONDecodeError, OSError):
+        return None
 
 
 def auth_status() -> dict[str, Any]:
@@ -96,10 +119,38 @@ def auth_status() -> dict[str, Any]:
 
 
 def remote_url(slug: str) -> str:
-    tok = token()
-    if tok and not gh_authenticated():
-        return f"https://x-access-token:{tok}@github.com/{slug}.git"
+    """The URL git actually stores. Never contains a credential.
+
+    Embedding the token here would persist it in plaintext inside
+    ``.git/config`` for the life of the clone, and leak it into every error
+    message that echoes the failing command.
+    """
     return f"https://github.com/{slug}.git"
+
+
+TOKEN_ENV = "TRADEGIT_GH_TOKEN"
+
+# A per-invocation credential helper. The token is passed through the
+# environment, so the secret appears in neither argv nor .git/config.
+_HELPER = (f'!f() {{ echo username=x-access-token; echo password=${TOKEN_ENV}; }}; f')
+
+
+def auth_args() -> list[str]:
+    """``git`` flags that authenticate this one invocation, if needed."""
+    if gh_authenticated() or not token():
+        return []            # gh's own credential helper, or nothing to add
+    return ["-c", "credential.helper=", "-c", f"credential.helper={_HELPER}"]
+
+
+def auth_env() -> dict[str, str]:
+    tok = token()
+    return {TOKEN_ENV: tok} if tok and not gh_authenticated() else {}
+
+
+def git_remote(cfg: Config, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """Run a git command that talks to GitHub, with credentials attached."""
+    return run(["git", *auth_args(), *args], cwd=cfg.repo_dir, check=check,
+               env=auth_env())
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +160,8 @@ def remote_url(slug: str) -> str:
 def repo_exists(slug: str) -> bool:
     if gh_authenticated():
         return run(["gh", "repo", "view", slug], check=False).returncode == 0
-    proc = run(["git", "ls-remote", remote_url(slug)], check=False)
+    proc = run(["git", *auth_args(), "ls-remote", remote_url(slug)],
+               check=False, env=auth_env())
     return proc.returncode == 0
 
 
@@ -125,7 +177,8 @@ def clone(slug: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and any(dest.iterdir()):
         raise SyncError(f"{dest} already exists and is not empty")
-    run(["git", "clone", remote_url(slug), str(dest)])
+    run(["git", *auth_args(), "clone", remote_url(slug), str(dest)],
+        env=auth_env())
 
 
 def visibility(slug: str) -> str | None:
@@ -156,7 +209,7 @@ def local_head(cfg: Config) -> str | None:
 def remote_head(cfg: Config) -> str | None:
     """Remote HEAD without fetching objects — cheap enough for every write."""
     branch = current_branch(cfg) or "HEAD"
-    proc = git(cfg, "ls-remote", "origin", branch, check=False)
+    proc = git_remote(cfg, "ls-remote", "origin", branch, check=False)
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
     return proc.stdout.split()[0]
@@ -215,18 +268,18 @@ def pull(cfg: Config) -> dict[str, Any]:
     if not cfg.initialized:
         raise SyncError("not initialized — run `tradegit init`")
     before = local_head(cfg)
-    proc = git(cfg, "pull", "--rebase", "--autostash", "origin",
-               current_branch(cfg) or "main", check=False)
+    proc = git_remote(cfg, "pull", "--rebase", "--autostash", "origin",
+                      current_branch(cfg) or "main", check=False)
     if proc.returncode != 0:
         conflicts = _resolve_conflicts(cfg)
         if conflicts is None:
             raise SyncError(
                 "pull failed and could not be auto-resolved:\n"
-                + (proc.stderr or proc.stdout)
+                + redact(proc.stderr or proc.stdout)
                 + f"\nResolve by hand in {cfg.repo_dir}")
     after = local_head(cfg)
     return {"changed": before != after, "before": before, "after": after,
-            "output": (proc.stdout + proc.stderr).strip()}
+            "output": redact((proc.stdout + proc.stderr).strip())}
 
 
 def _resolve_conflicts(cfg: Config) -> bool | None:
@@ -284,14 +337,15 @@ def commit_and_push(cfg: Config, message: str, *, push: bool | None = None) -> d
         return result
 
     branch = current_branch(cfg) or "main"
-    proc = git(cfg, "push", "origin", branch, check=False)
+    proc = git_remote(cfg, "push", "origin", branch, check=False)
     if proc.returncode != 0:
         pull(cfg)
-        proc = git(cfg, "push", "origin", branch, check=False)
+        proc = git_remote(cfg, "push", "origin", branch, check=False)
     result["pushed"] = proc.returncode == 0
     if not result["pushed"]:
         result["message"] = ("committed locally but push failed — run `tradegit sync` "
-                             "when back online:\n" + (proc.stderr or proc.stdout).strip())
+                             "when back online:\n"
+                             + redact((proc.stderr or proc.stdout).strip()))
     else:
         state = read_state(cfg)
         state.update({"last_sync": _now(), "last_pushed_head": local_head(cfg)})

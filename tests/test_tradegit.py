@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 sys.path.insert(0, str(ROOT))
 
-from tradegit import analytics, importers, store  # noqa: E402
+from tradegit import analytics, importers, store, sync  # noqa: E402
 from tradegit.config import Config  # noqa: E402
 from tradegit.schema import ValidationError, normalize, resolve  # noqa: E402
 
@@ -299,6 +299,84 @@ class TestStore(unittest.TestCase):
         self.assertEqual(len(store.select(self.cfg)), 2)
         self.assertEqual(len(store.select(self.cfg, symbol="nvda")), 1)
         self.assertEqual(len(store.select(self.cfg, since="2026-05-05T00:00:00Z")), 1)
+
+
+class TestSecurity(unittest.TestCase):
+    """Guarantees the README makes to users. Do not let these regress."""
+
+    def setUp(self):
+        self.saved = {k: os.environ.get(k) for k in ("GITHUB_TOKEN", "GH_TOKEN")}
+        os.environ["GITHUB_TOKEN"] = "ghp_pretendThisIsARealSecret123456789"
+        sync.gh_authenticated.cache_clear()
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value
+        sync.gh_authenticated.cache_clear()
+
+    def test_remote_url_never_carries_a_credential(self):
+        """A tokenized URL would be persisted in .git/config by `git clone`."""
+        url = sync.remote_url("owner/journal")
+        self.assertEqual(url, "https://github.com/owner/journal.git")
+        self.assertNotIn("@", url.split("//", 1)[1])
+        self.assertNotIn(os.environ["GITHUB_TOKEN"], url)
+
+    def test_token_is_not_passed_in_argv(self):
+        """argv is world-readable via `ps` on a shared machine."""
+        secret = os.environ["GITHUB_TOKEN"]
+        for arg in sync.auth_args():
+            self.assertNotIn(secret, arg)
+        # It travels in the environment instead, which is not world-readable.
+        if not sync.gh_authenticated():
+            self.assertEqual(sync.auth_env().get(sync.TOKEN_ENV), secret)
+
+    def test_error_messages_are_redacted(self):
+        secret = os.environ["GITHUB_TOKEN"]
+        self.assertNotIn(secret, sync.redact(f"failed: git push https://x:{secret}@h/r"))
+        self.assertIn("***", sync.redact(f"token={secret}"))
+        self.assertEqual(
+            sync.redact("clone https://user:pass@github.com/o/r.git"),
+            "clone https://***:***@github.com/o/r.git")
+
+    def test_config_never_persists_a_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["TRADEGIT_HOME"] = tmp
+            try:
+                cfg = Config.load()
+                cfg.repo_slug = "owner/journal"
+                cfg.save()
+                written = cfg.config_path.read_text(encoding="utf-8")
+                self.assertNotIn(os.environ["GITHUB_TOKEN"], written)
+                self.assertNotIn("token", written.lower())
+            finally:
+                os.environ.pop("TRADEGIT_HOME", None)
+
+    def test_data_dir_is_not_world_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["TRADEGIT_HOME"] = str(Path(tmp) / "home")
+            try:
+                cfg = Config.load()
+                cfg.ensure_dirs()
+                self.assertEqual(cfg.home.stat().st_mode & 0o077, 0)
+            finally:
+                os.environ.pop("TRADEGIT_HOME", None)
+
+    def test_index_queries_cannot_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["TRADEGIT_HOME"] = tmp
+            try:
+                cfg = Config.load()
+                cfg.ensure_dirs()
+                cfg.journal_dir.mkdir(parents=True, exist_ok=True)
+                store.append(cfg, [trade("AAPL", "BUY", 1, 100, "2026-05-04T00:00:00Z")])
+                self.assertEqual(len(store.query(cfg, "SELECT id FROM trades")), 1)
+                import sqlite3
+                with self.assertRaises(sqlite3.OperationalError):
+                    store.query(cfg, "DELETE FROM trades")
+            finally:
+                os.environ.pop("TRADEGIT_HOME", None)
 
 
 class TestCliEndToEnd(unittest.TestCase):

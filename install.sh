@@ -44,6 +44,12 @@ warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 
 link_or_copy() {  # src dst
   local src="$1" dst="$2"
+  # rm -rf on a path built from an empty variable is how installers eat
+  # someone's home directory. Refuse anything that isn't our own target.
+  case "$dst" in
+    */"$NAME") ;;
+    *) echo "install.sh: refusing to write to unexpected path: $dst" >&2; exit 1 ;;
+  esac
   rm -rf "$dst"
   mkdir -p "$(dirname "$dst")"
   if [ "$copy" = 1 ]; then

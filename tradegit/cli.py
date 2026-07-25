@@ -699,7 +699,7 @@ def cmd_config(args: argparse.Namespace) -> int:
 def _add_filters(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--since", help="30d / 3m / 1y / ytd / mtd / 2026-01-01")
     parser.add_argument("--until", help="截止时间，同样支持相对写法")
-    parser.add_argument("--symbol", help="标的（期权会同时匹配 underlying）")
+    parser.add_argument("--symbol", "-s", help="标的（期权会同时匹配 underlying）")
     parser.add_argument("--account")
     parser.add_argument("--broker")
     parser.add_argument("--strategy")

@@ -216,7 +216,16 @@ def connect(cfg: Config, *, refresh: bool = True) -> sqlite3.Connection:
 
 
 def query(cfg: Config, sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
-    conn = connect(cfg)
+    """Run a query against the index.
+
+    The index is refreshed first, then reopened read-only, so a query can
+    never mutate it — the JSONL files are the source of truth and the only
+    thing allowed to write here is :func:`connect`'s rebuild.
+    """
+    connect(cfg).close()                       # refresh if the journal moved
+    uri = f"file:{cfg.index_path.as_uri()[7:]}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
     try:
         return [dict(row) for row in conn.execute(sql, tuple(params)).fetchall()]
     finally:

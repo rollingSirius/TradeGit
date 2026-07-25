@@ -92,8 +92,15 @@ class Config:
         tmp.replace(self.config_path)
 
     def ensure_dirs(self) -> None:
-        for d in (self.home, self.cache_dir, self.imports_dir):
-            d.mkdir(parents=True, exist_ok=True)
+        # 0700: the journal is financial data, and on a shared machine the
+        # default umask would leave it world-readable.
+        self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for d in (self.cache_dir, self.imports_dir):
+            d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            self.home.chmod(0o700)
+        except OSError:
+            pass
 
     @property
     def initialized(self) -> bool:
