@@ -77,7 +77,8 @@ Claude： NVDA，−4,114.50，2026-05-20 持有到 06-02。开仓理由写的�
 ## 安装
 
 ```bash
-git clone <this-repo> ~/TradeGit && cd ~/TradeGit && ./install.sh
+git clone https://github.com/rollingSirius/TradeGit.git ~/TradeGit
+cd ~/TradeGit && ./install.sh
 ```
 
 安装脚本会自动检测你装了哪些工具，并把 skill 注册进去：
