@@ -53,12 +53,20 @@ link_or_copy() {  # src dst
   fi
 }
 
-strip_block() {  # file
+strip_block() {  # file — remove our managed block; returns 1 if there was none
   local file="$1"
-  [ -f "$file" ] || return 0
+  [ -f "$file" ] || return 1
+  grep -qF "$BEGIN" "$file" || return 1   # never rewrite a file we don't own part of
   awk -v b="$BEGIN" -v e="$END" '
     index($0, b) { skip = 1 } !skip { print } index($0, e) { skip = 0 }
   ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+drop() {  # path — remove if present, report only what was actually there
+  local path="$1"
+  [ -e "$path" ] || [ -L "$path" ] || return 0
+  rm -rf "$path"
+  ok "removed $path"
 }
 
 # ---------------------------------------------------------------- detection --
@@ -74,12 +82,13 @@ fi
 # ---------------------------------------------------------------- uninstall --
 if [ "$uninstall" = 1 ]; then
   say "卸载 TradeGit skill（不会删除 ~/.tradegit 里的交易记录）："
-  rm -rf "$CLAUDE_DIR/$NAME" && ok "removed $CLAUDE_DIR/$NAME"
-  [ -n "$project" ] && rm -rf "$project/.claude/skills/$NAME" \
-    && ok "removed $project/.claude/skills/$NAME"
-  rm -f "$CODEX_DIR/prompts/$NAME.md" && ok "removed $CODEX_DIR/prompts/$NAME.md"
-  strip_block "$CODEX_DIR/AGENTS.md" && ok "cleaned $CODEX_DIR/AGENTS.md"
-  rm -f "$BIN_DIR/$NAME" && ok "removed $BIN_DIR/$NAME"
+  drop "$CLAUDE_DIR/$NAME"
+  [ -n "$project" ] && drop "$project/.claude/skills/$NAME"
+  drop "$CODEX_DIR/prompts/$NAME.md"
+  if strip_block "$CODEX_DIR/AGENTS.md"; then
+    ok "cleaned $CODEX_DIR/AGENTS.md"
+  fi
+  drop "$BIN_DIR/$NAME"
   say ""
   say "交易记录仍在 ~/.tradegit 和你的 GitHub 私有仓库里，未受影响。"
   exit 0
@@ -117,7 +126,7 @@ Read $SRC/AGENTS.md first, then carry out the user's request:
 EOF
   ok "Codex prompt → $CODEX_DIR/prompts/$NAME.md  (用 /tradegit 调用)"
 
-  strip_block "$CODEX_DIR/AGENTS.md"
+  strip_block "$CODEX_DIR/AGENTS.md" || true   # no previous block is the normal case
   {
     [ -s "$CODEX_DIR/AGENTS.md" ] && printf '\n'
     printf '%s\n' "$BEGIN"
