@@ -1,0 +1,23 @@
+Statement,Header,Field Name,Field Value
+Statement,Data,BrokerName,Interactive Brokers
+Statement,Data,Period,"May 1, 2026 - June 30, 2026"
+Trades,Header,DataDiscriminator,Asset Category,Currency,Symbol,Date/Time,Quantity,T. Price,C. Price,Proceeds,Comm/Fee,Basis,Realized P/L,MTM P/L,Code
+Trades,Data,Order,Stocks,USD,AAPL,"2026-05-04, 09:31:12",100,213.45,214.02,-21345,-1.0025,21346.0025,0,57,O
+Trades,Data,Order,Stocks,USD,AAPL,"2026-06-12, 14:02:44",-100,229.8,229.5,22980,-1.0031,-21346.0025,1632.9944,-30,C
+Trades,SubTotal,,Stocks,USD,AAPL,,0,,,1635,-2.0056,0,1632.9944,27,
+Trades,Data,Order,Stocks,USD,NVDA,"2026-05-20, 10:15:00",50,1180.5,1175,-59025,-1.0,59026,0,-275,O
+Trades,Data,Order,Stocks,USD,NVDA,"2026-06-02, 15:44:10",-50,1098.25,1100,54912.5,-1.0,-59026,-4114.5,87.5,C
+Trades,Data,ClosedLot,Stocks,USD,NVDA,"2026-05-20, 10:15:00",-50,1180.5,,0,0,59026,-4114.5,0,
+Trades,Data,Order,Equity and Index Options,USD,TSLA 19JUN26 300 C,"2026-05-28, 11:00:00",5,12.4,12.1,-6200,-3.25,6203.25,0,-150,O
+Trades,Data,Order,Equity and Index Options,USD,TSLA 19JUN26 300 C,"2026-06-10, 13:20:00",-5,18.9,18.7,9450,-3.25,-6203.25,3243.5,-100,C
+Dividends,Header,Currency,Date,Description,Amount
+Dividends,Data,USD,2026-05-15,AAPL(US0378331005) Cash Dividend USD 0.26 per Share (Ordinary Dividend),26
+Dividends,Data,Total,,,26
+Withholding Tax,Header,Currency,Date,Description,Amount,Code
+Withholding Tax,Data,USD,2026-05-15,AAPL(US0378331005) Cash Dividend USD 0.26 per Share - US Tax,-2.6,
+Interest,Header,Currency,Date,Description,Amount
+Interest,Data,USD,2026-05-31,USD Credit Interest for Apr-2026,12.34
+Fees,Header,Subtitle,Currency,Date,Description,Amount
+Fees,Data,Other Fees,USD,2026-05-31,Market data subscription,-4.5
+Deposits & Withdrawals,Header,Currency,Settle Date,Description,Amount
+Deposits & Withdrawals,Data,USD,2026-05-01,Electronic Fund Transfer,50000

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# TradeGit launcher. Works from any cwd; no install step, no dependencies.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="${TRADEGIT_PYTHON:-}"
+if [ -z "$PY" ]; then
+  for c in python3 python; do command -v "$c" >/dev/null 2>&1 && { PY="$c"; break; }; done
+fi
+[ -n "$PY" ] || { echo "tradegit: python3 not found on PATH" >&2; exit 127; }
+exec env PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" "$PY" -m tradegit "$@"

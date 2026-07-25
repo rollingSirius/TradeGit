@@ -1,0 +1,13 @@
+"Transactions  for account Individual XXXX-1234 as of 07/25/2026 08:00:00 ET"
+
+"Date","Action","Symbol","Description","Quantity","Price","Fees & Comm","Amount"
+"07/10/2026","Sell","AMD","ADVANCED MICRO DEVICES INC","100","$128.40","$0.03","$12,839.97"
+"07/01/2026","MoneyLink Transfer","","MONEYLINK TRANSFER","","","","-$5,000.00"
+"06/30/2026","Bank Interest","","SCHWAB1 INT 05/29-06/28","","","","$4.11"
+"06/25/2026","Sell to Close","AAPL 07/17/2026 200.00 C","CALL APPLE INC $200 EXP 07/17/26","2","$18.50","$1.30","$3,698.70"
+"06/20/2026","Sell","MSFT","MICROSOFT CORP","40","$505.20","$0.02","$20,207.98"
+"06/13/2026 as of 06/12/2026","Qualified Dividend","MSFT","MICROSOFT CORP","","","","$33.20"
+"06/02/2026","Buy to Open","AAPL 07/17/2026 200.00 C","CALL APPLE INC $200 EXP 07/17/26","2","$12.00","$1.30","-$2,401.30"
+"05/11/2026","Buy","MSFT","MICROSOFT CORP","40","$470.00","$0.00","-$18,800.00"
+"05/01/2026","Buy","AMD","ADVANCED MICRO DEVICES INC","100","$155.00","$0.00","-$15,500.00"
+"04/15/2026","Journaled Shares","AAPL","APPLE INC","10","","","" 
