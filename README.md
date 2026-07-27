@@ -22,6 +22,7 @@ English: [README.en.md](README.en.md)
 | 改动全程留痕 | 记录只追加，更正写新版本、删除写作废标记；`git log -p` 能看到你当时怎么想、后来怎么改。 |
 | 券商流水直接导入 | IBKR（对账单 / Flex Query）、嘉信理财，含股息利息税费；重复导入幂等；猜不准的行会停下来问你。 |
 | 盈亏算得住 | FIFO 配对，含手续费、支持做空/部分平仓/多翻空/期权乘数；测试用 IBKR 自己的 `Realized P/L` 列做交叉验证。 |
+| 多币种不糊弄 | 港美股混合时不会把 HKD 和 USD 加在一起——要么按币种分开给，要么你传汇率折算，绝不给一个看起来合理的错数。 |
 | 复盘给事实不给建议 | 输出"亏损单平均持有 34 天 vs 盈利单 21 天"这类可证伪的观察，不给买卖推荐。 |
 | 零依赖 | 只要 python3 和 git，没有任何第三方包，不需要账号、不需要订阅。 |
 | 凭证不落盘 | 只调用宿主环境已有的 `gh` / `GITHUB_TOKEN`，token 不进配置、不进 argv、不进 `.git/config`、不进报错信息。 |
@@ -207,6 +208,7 @@ tradegit analyze --since 90d                    # 总览 + 事实性观察
 tradegit analyze --since ytd --group-by symbol  # 按标的（亏损排在最前）
 tradegit roundtrips --sort pnl --limit 10       # 亏得最多的 10 笔
 tradegit positions --mark AAPL=213.4            # 持仓（给了现价才算浮动盈亏）
+tradegit analyze --fx HKD=0.128 --base-currency USD   # 港美股混合，折算到统一币种
 ```
 
 `analyze` 会附带几条从数据里得出的**观察**，例如：

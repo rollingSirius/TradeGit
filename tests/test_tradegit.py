@@ -301,6 +301,82 @@ class TestStore(unittest.TestCase):
         self.assertEqual(len(store.select(self.cfg, since="2026-05-05T00:00:00Z")), 1)
 
 
+class TestMultiCurrency(unittest.TestCase):
+    """A P&L tool that adds USD to HKD is worse than one that refuses to."""
+
+    def book(self):
+        return [
+            trade("AAPL", "BUY", 100, 200, "2026-01-02T00:00:00Z", currency="USD"),
+            trade("AAPL", "SELL", 100, 210, "2026-02-02T00:00:00Z", currency="USD"),
+            trade("0700", "BUY", 100, 400, "2026-01-05T00:00:00Z", currency="HKD"),
+            trade("0700", "SELL", 100, 450, "2026-02-05T00:00:00Z", currency="HKD"),
+        ]
+
+    def test_single_currency_is_unchanged(self):
+        records = self.book()[:2]
+        result = analytics.summarize(records)
+        self.assertEqual(result["currencies"], ["USD"])
+        self.assertEqual(result["metrics"]["currency"], "USD")
+        self.assertFalse(result["metrics"]["currency_mixed"])
+        self.assertAlmostEqual(result["metrics"]["realized_pnl"], 1000.0)
+
+    def test_mixed_currencies_refuse_to_produce_a_total(self):
+        result = analytics.summarize(self.book())
+        metrics = result["metrics"]
+        self.assertEqual(result["currencies"], ["HKD", "USD"])
+        self.assertTrue(metrics["currency_mixed"])
+        # The old bug: 1000 USD + 5000 HKD reported as 6000.
+        for field in ("realized_pnl", "total_pnl", "avg_win", "expectancy",
+                      "max_drawdown", "largest_win", "profit_factor"):
+            self.assertIsNone(metrics[field], f"{field} must not be a cross-currency sum")
+        # Counts stay meaningful and are still reported.
+        self.assertEqual(metrics["roundtrips"], 2)
+        self.assertEqual(metrics["wins"], 2)
+        self.assertEqual(metrics["win_rate"], 100.0)
+
+    def test_per_currency_breakdown_carries_the_real_numbers(self):
+        by_currency = {b["currency"]: b for b in analytics.summarize(self.book())["by_currency"]}
+        self.assertAlmostEqual(by_currency["USD"]["realized_pnl"], 1000.0)
+        self.assertAlmostEqual(by_currency["HKD"]["realized_pnl"], 5000.0)
+        self.assertEqual(by_currency["USD"]["roundtrips"], 1)
+
+    def test_fx_rates_produce_a_converted_total(self):
+        result = analytics.summarize(self.book(), fx={"HKD": 0.128},
+                                     base_currency="USD")
+        metrics = result["metrics"]
+        self.assertEqual(metrics["currency"], "USD")
+        # 1000 USD + 5000 HKD * 0.128 = 1640 USD
+        self.assertAlmostEqual(metrics["realized_pnl"], 1640.0)
+        self.assertEqual(metrics["fx_rates"]["HKD"], 0.128)
+
+    def test_missing_fx_rate_is_an_error_not_a_guess(self):
+        with self.assertRaises(analytics.CurrencyError) as caught:
+            analytics.summarize(self.book(), fx={"JPY": 0.0067}, base_currency="USD")
+        self.assertIn("HKD", str(caught.exception))
+
+    def test_buckets_spanning_currencies_do_not_sum(self):
+        # Both round trips close in 2026-02, in different currencies.
+        by_month = {b["key"]: b for b in analytics.summarize(self.book())["by_month"]}
+        february = by_month["2026-02"]
+        self.assertIsNone(february["net_pnl"])
+        self.assertEqual(february["currencies"], ["HKD", "USD"])
+        self.assertEqual(february["roundtrips"], 2)
+        # A per-symbol bucket is single-currency, so it still totals.
+        by_symbol = {b["key"]: b for b in analytics.summarize(self.book())["by_symbol"]}
+        self.assertAlmostEqual(by_symbol["AAPL"]["net_pnl"], 1000.0)
+        self.assertEqual(by_symbol["AAPL"]["currency"], "USD")
+
+    def test_roundtrips_and_positions_carry_their_currency(self):
+        matched = analytics.match_fifo(self.book()[:3])
+        self.assertEqual(matched["roundtrips"][0]["currency"], "USD")
+        self.assertEqual(matched["open_positions"][0]["currency"], "HKD")
+
+    def test_review_notes_stay_safe_when_mixed(self):
+        result = analytics.summarize(self.book())
+        notes = analytics.review_prompts(result)
+        self.assertTrue(any("多个币种" in n for n in notes))
+
+
 class TestSecurity(unittest.TestCase):
     """Guarantees the README makes to users. Do not let these regress."""
 

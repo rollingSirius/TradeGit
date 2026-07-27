@@ -30,6 +30,7 @@
 | 分组统计 | `tradegit analyze --since ytd --group-by symbol --json` |
 | 亏损最重的平仓交易 | `tradegit roundtrips --sort pnl --limit 10 --json` |
 | 当前持仓 | `tradegit positions --mark AAPL=213.4 --json` |
+| 多币种折算 | `tradegit analyze --fx HKD=0.128 --base-currency USD --json` |
 | 任意只读 SQL（表名 `trades`） | `tradegit sql "SELECT ..." --json` |
 | 检查远端是否有变动 | `tradegit check --json`（不同步时退出码 1） |
 | 更正 / 作废记录 | `tradegit amend <id> --review "..." --json` / `tradegit void <id> --json` |
@@ -46,10 +47,12 @@
    （有止损才能算 R 倍数）。
 3. **导入必须先 `--dry-run`**，把识别到的券商、新增条数、时间范围、无法解析的行
    讲给用户，确认后再真正写入。`unparsed` 里的行要念给用户，问清楚后手工补录，不要猜。
-4. **不下单、不给投资建议**。只记录和统计。用户要求下单时说明工具边界。
-5. **本工具不生成图表或面板**。用户要可视化时，用 `analyze --json` / `roundtrips --json` /
+4. **多币种不要自己加总**。混合币种时 `metrics` 的金额为 `null`，真实数字在
+   `by_currency`；要合计就问用户汇率再传 `--fx`，并讲明用了什么汇率。
+5. **不下单、不给投资建议**。只记录和统计。用户要求下单时说明工具边界。
+6. **本工具不生成图表或面板**。用户要可视化时，用 `analyze --json` / `roundtrips --json` /
    `sql --json` 取数，再交给其他组件渲染。
-6. **私有仓库里只放交易记录**，不写入任何凭证。
+7. **私有仓库里只放交易记录**，不写入任何凭证。
 
 ## 数据布局
 

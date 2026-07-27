@@ -25,6 +25,7 @@ deliberately goes one step further:
 | Every revision is preserved | Records are append-only: a correction writes a new version, a deletion writes a tombstone. `git log -p` shows what you thought then and how you revised it. |
 | Broker statements import directly | IBKR (Activity Statement / Flex Query) and Charles Schwab, including dividends, interest and fees. Re-importing the same file is idempotent, and rows that can't be inferred safely stop and ask you. |
 | P&L you can trust | FIFO lot matching, net of fees, handling shorts, partial exits, position flips and option multipliers. Tests cross-check the numbers against IBKR's own `Realized P/L` column. |
+| Honest about currencies | A mixed HK/US book never has HKD added to USD. Either it reports per currency, or you supply the rates — it will not hand you a plausible-looking wrong number. |
 | Review gives facts, not advice | It surfaces falsifiable observations like "losers held 34 days on average vs 21 for winners" — never a buy or sell recommendation. |
 | Zero dependencies | python3 and git. No third-party packages, no account, no subscription. |
 | Credentials never hit disk | It only uses the `gh` / `GITHUB_TOKEN` credentials your environment already has. The token never enters the config file, argv, `.git/config`, or an error message. |
@@ -219,6 +220,7 @@ tradegit analyze --since 90d                    # summary + factual observations
 tradegit analyze --since ytd --group-by symbol  # by symbol (losses first)
 tradegit roundtrips --sort pnl --limit 10       # 10 biggest losers
 tradegit positions --mark AAPL=213.4            # positions (marks give unrealized P&L)
+tradegit analyze --fx HKD=0.128 --base-currency USD   # mixed-currency book, one base
 ```
 
 `analyze` adds a few **observations** derived from the data:
@@ -351,6 +353,9 @@ both sides, and options use their contract multiplier.
 - Deposits and withdrawals **do not count as performance**
 - Trades with a `--stop` get an R-multiple
 - Unrealized P&L needs marks (`--mark`); without them it is `null`
+- **Currencies are never summed together**: for a mixed HK/US book, either pass
+  `--fx HKD=0.128 --base-currency USD` to convert, or read the per-currency
+  breakdown. No total beats a wrong total
 
 Metrics: realized P&L, win rate, profit factor, expectancy, average win/loss, largest
 win/loss, max drawdown, win/loss streaks, average hold days, average R. Groupable by
@@ -430,7 +435,7 @@ Multiple journals: switch roots with the `TRADEGIT_HOME` environment variable.
 python3 -m unittest tests.test_tradegit -v
 ```
 
-35 tests, covering field normalization, FIFO (long/short/partial exit/position
+43 tests, covering field normalization, FIFO (long/short/partial exit/position
 flip/option multiplier), all three broker parsers, storage dedup and index refresh,
 the credential-safety guarantees, and a full CLI end-to-end run against a local bare
 repo standing in for GitHub (log → dedup → import → analyze → amend → detect a remote

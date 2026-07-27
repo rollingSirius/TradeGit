@@ -93,10 +93,15 @@ def _make_roundtrip(lot: _Lot, exit_rec: dict[str, Any], qty: float,
         if per_unit_risk > 1e-9:
             r_multiple = round_money(
                 (net / (per_unit_risk * qty * multiplier)), 3)
+    entry_ccy = (entry.get("currency") or "").upper()
+    exit_ccy = (exit_rec.get("currency") or "").upper()
     return {
         "symbol": exit_rec.get("symbol", ""),
         "underlying": (exit_rec.get("option") or {}).get("underlying") or exit_rec.get("symbol"),
         "account": exit_rec.get("account", ""),
+        "currency": exit_ccy or entry_ccy or "USD",
+        # Entry and exit in different currencies means one of them is mis-recorded.
+        "currency_mismatch": bool(entry_ccy and exit_ccy and entry_ccy != exit_ccy) or None,
         "asset_class": exit_rec.get("asset_class", "STK"),
         "direction": "long" if lot.direction > 0 else "short",
         "quantity": round_money(qty, 8),
@@ -151,6 +156,7 @@ def _summarize_open(books: dict[tuple[str, str], deque[_Lot]]) -> list[dict[str,
             "opened_ts": min(lot.ts for lot in lots),
             "lots": len(lots),
             "asset_class": lots[0].record.get("asset_class", "STK"),
+            "currency": (lots[0].record.get("currency") or "USD").upper(),
             "strategy": lots[0].record.get("strategy"),
             "thesis": lots[0].record.get("thesis"),
             "stop": (lots[0].record.get("risk") or {}).get("stop"),
@@ -164,14 +170,41 @@ def _summarize_open(books: dict[tuple[str, str], deque[_Lot]]) -> list[dict[str,
 # metrics
 # ---------------------------------------------------------------------------
 
-def summarize(records: list[dict[str, Any]], *, marks: dict[str, float] | None = None
-              ) -> dict[str, Any]:
-    """Full performance report over an already-filtered record set."""
-    matched = match_fifo(records)
-    trips = matched["roundtrips"]
-    positions = matched["open_positions"]
-    marks = {k.upper(): float(v) for k, v in (marks or {}).items()}
+class CurrencyError(ValueError):
+    """Raised when money in different currencies would have to be added up."""
 
+
+def _currency_free_notes(report: dict[str, Any], metrics: dict[str, Any],
+                         trips: list[dict[str, Any]]) -> list[str]:
+    """Observations that survive a mixed-currency book — counts and durations."""
+    notes = []
+    no_stop = [t for t in trips if t.get("r_multiple") is None]
+    if len(no_stop) > len(trips) * 0.5:
+        notes.append(f"{len(no_stop)}/{len(trips)} 笔交易没有记录止损价，无法计算 R 倍数。")
+
+    losers = [t["hold_days"] for t in trips if t["net_pnl"] < 0]
+    winners = [t["hold_days"] for t in trips if t["net_pnl"] > 0]
+    if losers and winners:
+        avg_l, avg_w = sum(losers) / len(losers), sum(winners) / len(winners)
+        if avg_l > avg_w * 1.5:
+            notes.append(f"亏损单平均持有 {avg_l:.1f} 天 vs 盈利单 {avg_w:.1f} 天——"
+                         f"典型的「截断利润、让亏损奔跑」形态。")
+
+    untagged = sum(1 for t in trips if not t.get("thesis"))
+    if untagged:
+        notes.append(f"{untagged}/{len(trips)} 笔没有记录交易理由。")
+
+    for bucket in report.get("by_currency") or []:
+        notes.append(f"{bucket['currency']}：{bucket['roundtrips']} 笔平仓，"
+                     f"已实现 {bucket['realized_pnl']:+,.2f}，"
+                     f"胜率 {bucket['win_rate']:.1f}%。")
+    return notes
+
+
+def _money_metrics(trips: list[dict[str, Any]], cash_records: list[dict[str, Any]],
+                   positions: list[dict[str, Any]], marks: dict[str, float]
+                   ) -> dict[str, Any]:
+    """Metrics denominated in money. Only valid for one currency at a time."""
     wins = [t for t in trips if t["net_pnl"] > 0]
     losses = [t for t in trips if t["net_pnl"] < 0]
     gross_profit = sum(t["net_pnl"] for t in wins)
@@ -179,11 +212,12 @@ def summarize(records: list[dict[str, Any]], *, marks: dict[str, float] | None =
     realized = sum(t["net_pnl"] for t in trips)
     total_fees = sum(t["fees"] for t in trips)
 
-    cash = _cash_summary(records)
+    cash = _cash_summary(cash_records)
     unrealized, marked = _unrealized(positions, marks)
 
     equity = _equity_curve(trips)
-    metrics = {
+    return {
+        "metrics": {
         "roundtrips": len(trips),
         "wins": len(wins),
         "losses": len(losses),
@@ -195,8 +229,10 @@ def summarize(records: list[dict[str, Any]], *, marks: dict[str, float] | None =
         "fees_paid": round_money(total_fees),
         "avg_win": round_money(gross_profit / len(wins), 2) if wins else 0.0,
         "avg_loss": round_money(-gross_loss / len(losses), 2) if losses else 0.0,
-        "largest_win": round_money(max((t["net_pnl"] for t in trips), default=0.0)),
-        "largest_loss": round_money(min((t["net_pnl"] for t in trips), default=0.0)),
+        # Over wins/losses specifically: min() across all trades reports the
+        # smallest *win* as the "largest loss" when nothing lost money.
+        "largest_win": round_money(max((t["net_pnl"] for t in wins), default=0.0)),
+        "largest_loss": round_money(min((t["net_pnl"] for t in losses), default=0.0)),
         "profit_factor": round_money(gross_profit / gross_loss, 3) if gross_loss else None,
         "expectancy": round_money(realized / len(trips), 2) if trips else 0.0,
         "payoff_ratio": round_money(
@@ -215,25 +251,135 @@ def summarize(records: list[dict[str, Any]], *, marks: dict[str, float] | None =
         "account_fees": cash["fees"],
         "unrealized_pnl": unrealized,
         "total_pnl": round_money(realized + cash["net"] + (unrealized or 0.0)),
+        },
+        "equity_curve": equity["points"],
+        "open_positions": marked,
     }
 
+
+# Metrics that are pure counts or ratios of counts, and therefore stay
+# meaningful even when the trades span several currencies.
+COUNT_METRICS = ("roundtrips", "wins", "losses", "breakeven", "win_rate",
+                 "avg_hold_days", "best_streak", "worst_streak")
+
+
+def _convert(trip: dict[str, Any], rate: float) -> dict[str, Any]:
+    """A copy of the round trip with money fields expressed in the base currency."""
+    converted = dict(trip)
+    for field in ("gross_pnl", "fees", "net_pnl", "cost_basis"):
+        converted[field] = round_money(trip[field] * rate)
+    converted["fx_rate"] = rate
+    return converted
+
+
+def summarize(records: list[dict[str, Any]], *, marks: dict[str, float] | None = None,
+              fx: dict[str, float] | None = None,
+              base_currency: str | None = None) -> dict[str, Any]:
+    """Full performance report over an already-filtered record set.
+
+    Money in different currencies is never silently added up. With a single
+    currency this behaves as you'd expect. With several:
+
+    * given ``fx`` rates (``{"HKD": 0.128}``, meaning 1 HKD = 0.128 base),
+      everything is converted into ``base_currency`` and reported as one number;
+    * without rates, every money metric at the top level is ``None`` and the
+      real numbers live in ``by_currency`` — a wrong total is worse than no
+      total in a P&L tool.
+    """
+    matched = match_fifo(records)
+    trips = matched["roundtrips"]
+    positions = matched["open_positions"]
+    marks = {k.upper(): float(v) for k, v in (marks or {}).items()}
+    rates = {k.upper(): float(v) for k, v in (fx or {}).items()}
+    cash_records = [r for r in records if r.get("kind") == "cash"]
+
+    currencies = sorted({t["currency"] for t in trips}
+                        | {(r.get("currency") or "").upper() for r in cash_records}
+                        | {p["currency"] for p in positions}) or []
+    currencies = [c for c in currencies if c]
+
+    period = {
+        "from": records[0]["ts"] if records else None,
+        "to": records[-1]["ts"] if records else None,
+        "records": len(records),
+    }
+
+    def block(subset_trips, subset_cash, subset_positions):
+        return _money_metrics(subset_trips, subset_cash, subset_positions, marks)
+
+    by_currency = []
+    for code in currencies:
+        part = block([t for t in trips if t["currency"] == code],
+                     [r for r in cash_records if (r.get("currency") or "").upper() == code],
+                     [p for p in positions if p["currency"] == code])
+        by_currency.append({"currency": code, **part["metrics"],
+                            "equity_curve": part["equity_curve"]})
+
+    mixed = len(currencies) > 1
+    base = (base_currency or ("" if mixed else (currencies[0] if currencies else "")))
+    base = base.upper() if base else None
+    if mixed and rates and not base:
+        base = "USD"
+
+    if not mixed:
+        computed = block(trips, cash_records, positions)
+        metrics = {**computed["metrics"], "currency": base, "currency_mixed": False}
+        equity_curve = computed["equity_curve"]
+        marked = computed["open_positions"]
+        scaled = trips
+    elif rates:
+        missing = [c for c in currencies if c != base and c not in rates]
+        if missing:
+            raise CurrencyError(
+                f"这些币种缺少汇率：{', '.join(missing)}。"
+                f"用 --fx {missing[0]}=<1 {missing[0]} 折合多少 {base}> 补上，"
+                f"或不传 --fx 以按币种分别查看。")
+        scaled = [_convert(t, 1.0 if t["currency"] == base else rates[t["currency"]])
+                  for t in trips]
+        scaled_cash = []
+        for record in cash_records:
+            code = (record.get("currency") or "").upper()
+            rate = 1.0 if code == base else rates.get(code, 1.0)
+            scaled_cash.append({**record,
+                                "net_amount": (record.get("net_amount") or 0.0) * rate})
+        computed = block(scaled, scaled_cash, positions)
+        metrics = {**computed["metrics"], "currency": base, "currency_mixed": True,
+                   "fx_rates": {**rates, base: 1.0}}
+        equity_curve = computed["equity_curve"]
+        marked = computed["open_positions"]
+    else:
+        # Mixed currencies, no rates: report counts, refuse to invent a total.
+        counts = block(trips, [], [])["metrics"]
+        metrics = {k: (counts[k] if k in COUNT_METRICS else None) for k in counts}
+        metrics.update({
+            "currency": None,
+            "currency_mixed": True,
+            "currencies": currencies,
+            "note": ("交易涉及多个币种，金额类指标无法合并。"
+                     "请看 by_currency，或传 --fx 折算到统一币种。"),
+        })
+        equity_curve = []
+        marked = positions
+        scaled = trips
+
     return {
-        "period": {
-            "from": records[0]["ts"] if records else None,
-            "to": records[-1]["ts"] if records else None,
-            "records": len(records),
-        },
+        "period": period,
+        "currencies": currencies,
+        "base_currency": base,
         "metrics": metrics,
-        "equity_curve": equity["points"],
+        "by_currency": by_currency,
+        "equity_curve": equity_curve,
         "roundtrips": trips,
         "open_positions": marked,
-        "by_symbol": group_by(trips, "symbol"),
-        "by_month": group_by(trips, lambda t: t["exit_ts"][:7]),
-        "by_strategy": group_by(trips, lambda t: t.get("strategy") or "(unset)"),
-        "by_direction": group_by(trips, "direction"),
-        "by_tag": _group_by_tag(trips),
-        "worst": sorted(trips, key=lambda t: t["net_pnl"])[:10],
-        "best": sorted(trips, key=lambda t: -t["net_pnl"])[:10],
+        # Grouped over base-converted trips when rates were supplied, so a
+        # month or strategy bucket spanning currencies still adds up.
+        "by_symbol": group_by(scaled, "symbol"),
+        "by_month": group_by(scaled, lambda t: t["exit_ts"][:7]),
+        "by_strategy": group_by(scaled, lambda t: t.get("strategy") or "(unset)"),
+        "by_direction": group_by(scaled, "direction"),
+        "by_tag": _group_by_tag(scaled),
+        "worst": sorted(scaled, key=lambda t: t["net_pnl"])[:10],
+        "best": sorted(scaled, key=lambda t: -t["net_pnl"])[:10],
     }
 
 
@@ -317,8 +463,14 @@ def group_by(trips: list[dict[str, Any]], key: Any) -> list[dict[str, Any]]:
         buckets[str(getter(trip))].append(trip)
     return sorted(
         (_bucket_stats(name, items) for name, items in buckets.items()),
-        key=lambda b: b["net_pnl"],
+        key=_bucket_sort_key,
     )
+
+
+def _bucket_sort_key(bucket: dict[str, Any]) -> tuple[int, float]:
+    """Losses first; buckets with no comparable total sort last."""
+    total = bucket.get("net_pnl")
+    return (1, 0.0) if total is None else (0, total)
 
 
 def _group_by_tag(trips: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -327,7 +479,7 @@ def _group_by_tag(trips: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for tag in trip.get("tags") or ["(untagged)"]:
             buckets[tag].append(trip)
     return sorted((_bucket_stats(n, i) for n, i in buckets.items()),
-                  key=lambda b: b["net_pnl"])
+                  key=_bucket_sort_key)
 
 
 def _bucket_stats(name: str, trips: list[dict[str, Any]]) -> dict[str, Any]:
@@ -335,8 +487,19 @@ def _bucket_stats(name: str, trips: list[dict[str, Any]]) -> dict[str, Any]:
     wins = [t for t in trips if t["net_pnl"] > 0]
     losses = [t for t in trips if t["net_pnl"] < 0]
     gross_loss = -sum(t["net_pnl"] for t in losses)
+    codes = sorted({t.get("currency") for t in trips if t.get("currency")})
+    if len(codes) > 1:
+        # A month or tag bucket can span currencies; a total would be fiction.
+        return {
+            "key": name, "roundtrips": len(trips), "wins": len(wins),
+            "losses": len(losses),
+            "win_rate": round_money(len(wins) / len(trips) * 100.0, 2) if trips else 0.0,
+            "net_pnl": None, "avg_pnl": None, "profit_factor": None,
+            "fees": None, "volume": None, "currencies": codes,
+        }
     return {
         "key": name,
+        "currency": codes[0] if codes else None,
         "roundtrips": len(trips),
         "net_pnl": round_money(net),
         "wins": len(wins),
@@ -360,6 +523,13 @@ def review_prompts(report: dict[str, Any]) -> list[str]:
     trips = report["roundtrips"]
     if not trips:
         return ["No closed round trips in this period."]
+
+    if metrics.get("currency_mixed") and metrics.get("currency") is None:
+        codes = "、".join(report.get("currencies") or [])
+        notes.append(
+            f"这段时间的交易涉及 {codes} 多个币种，金额无法直接合并——"
+            f"下面只给出与币种无关的观察。要看合计，请传 --fx 折算到统一币种。")
+        return notes + _currency_free_notes(report, metrics, trips)
 
     if metrics["losses"] and metrics["avg_loss"] and metrics["avg_win"]:
         ratio = abs(metrics["avg_win"] / metrics["avg_loss"])

@@ -69,6 +69,20 @@ def parse_marks(values: list[str] | None) -> dict[str, float]:
     return marks
 
 
+def parse_fx(values: list[str] | None) -> dict[str, float]:
+    """``--fx HKD=0.128`` — 1 HKD is worth 0.128 of the base currency."""
+    rates: dict[str, float] = {}
+    for chunk in values or []:
+        for pair in str(chunk).split(","):
+            if "=" not in pair:
+                continue
+            code, _, rate = pair.partition("=")
+            value = to_float(rate, None)
+            if value is not None:
+                rates[code.strip().upper()] = value
+    return rates
+
+
 def parse_fees(value: str | None) -> Any:
     if not value:
         return None
@@ -526,7 +540,9 @@ def cmd_positions(args: argparse.Namespace) -> int:
     maybe_refresh(cfg, args)
     records = store.select(cfg, **filters_from(args))
     marks = parse_marks(args.mark)
-    result = analytics.summarize(records, marks=marks)
+    result = analytics.summarize(records, marks=marks,
+                                 fx=parse_fx(getattr(args, "fx", None)),
+                                 base_currency=getattr(args, "base_currency", None))
     positions = result["open_positions"]
     rows = [f"{p['symbol']:<16} {p['direction']:<6} {p['quantity']:>12,.4g} "
             f"@ {p['avg_price']:>10,.4f}  成本 {p['cost_basis']:>12,.2f}"
@@ -544,7 +560,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     require_init(cfg)
     refresh = maybe_refresh(cfg, args)
     records = store.select(cfg, **filters_from(args))
-    result = analytics.summarize(records, marks=parse_marks(args.mark))
+    result = analytics.summarize(records, marks=parse_marks(args.mark),
+                                 fx=parse_fx(getattr(args, "fx", None)),
+                                 base_currency=getattr(args, "base_currency", None))
     result["sync"] = refresh
     result["notes"] = analytics.review_prompts(result)
 
@@ -559,41 +577,73 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def _money(value: Any, signed: bool = True, digits: int = 2) -> str:
+    """Money that may legitimately be unknown — never print a fabricated 0."""
+    if value is None:
+        return "—"
+    return f"{value:+,.{digits}f}" if signed else f"{value:,.{digits}f}"
+
+
 def _analyze_human(result: dict[str, Any], args: argparse.Namespace) -> str:
     m = result["metrics"]
     period = result["period"]
+    unit = f" {m['currency']}" if m.get("currency") else ""
     lines = [
         f"区间      {(period['from'] or '—')[:10]} → {(period['to'] or '—')[:10]}"
         f"   {period['records']} 条记录",
-        f"已实现    {m['realized_pnl']:+,.2f}   （{m['roundtrips']} 笔平仓，"
-        f"{m['wins']} 胜 / {m['losses']} 负，胜率 {m['win_rate']:.1f}%）",
-        f"总盈亏    {m['total_pnl']:+,.2f}   股息 {m['dividends']:+,.2f} · "
-        f"利息 {m['interest']:+,.2f} · 手续费 {m['fees_paid']:,.2f}",
-        f"均盈/均亏 {m['avg_win']:+,.2f} / {m['avg_loss']:+,.2f}"
-        f"   盈亏因子 {m['profit_factor'] if m['profit_factor'] is not None else '—'}"
-        f"   期望 {m['expectancy']:+,.2f}",
-        f"最大单笔  盈 {m['largest_win']:+,.2f} / 亏 {m['largest_loss']:+,.2f}"
-        f"   最大回撤 {m['max_drawdown']:,.2f}",
-        f"持有天数  平均 {m['avg_hold_days']:.1f}"
-        + (f"   平均 R {m['avg_r_multiple']}" if m["avg_r_multiple"] is not None else ""),
     ]
-    if m["unrealized_pnl"] is not None:
-        lines.append(f"浮动盈亏  {m['unrealized_pnl']:+,.2f}")
+
+    if m.get("currency_mixed") and m.get("currency") is None:
+        lines.append(f"币种      {'、'.join(result.get('currencies') or [])}"
+                     f"   ——金额不合并，见下方分币种明细")
+        lines.append(f"平仓      {m['roundtrips']} 笔（{m['wins']} 胜 / {m['losses']} 负，"
+                     f"胜率 {m['win_rate']:.1f}%），平均持有 {m['avg_hold_days']:.1f} 天")
+        for bucket in result.get("by_currency") or []:
+            lines.append(
+                f"\n【{bucket['currency']}】"
+                f"已实现 {_money(bucket['realized_pnl'])}"
+                f"   总盈亏 {_money(bucket['total_pnl'])}"
+                f"   {bucket['roundtrips']} 笔  胜率 {bucket['win_rate']:.1f}%"
+                f"   盈亏因子 {bucket['profit_factor'] if bucket['profit_factor'] is not None else '—'}"
+                f"   最大回撤 {_money(bucket['max_drawdown'], signed=False)}")
+        lines.append("\n要看统一口径的合计，加汇率：--fx HKD=0.128 --base-currency USD")
+    else:
+        if m.get("fx_rates"):
+            others = {k: v for k, v in m["fx_rates"].items() if k != m.get("currency")}
+            lines.append(f"币种      已折算为 {m['currency']}"
+                         f"（{', '.join(f'{k}={v}' for k, v in others.items())}）")
+        lines += [
+            f"已实现    {_money(m['realized_pnl'])}{unit}   （{m['roundtrips']} 笔平仓，"
+            f"{m['wins']} 胜 / {m['losses']} 负，胜率 {m['win_rate']:.1f}%）",
+            f"总盈亏    {_money(m['total_pnl'])}   股息 {_money(m['dividends'])} · "
+            f"利息 {_money(m['interest'])} · 手续费 {_money(m['fees_paid'], signed=False)}",
+            f"均盈/均亏 {_money(m['avg_win'])} / {_money(m['avg_loss'])}"
+            f"   盈亏因子 {m['profit_factor'] if m['profit_factor'] is not None else '—'}"
+            f"   期望 {_money(m['expectancy'])}",
+            f"最大单笔  盈 {_money(m['largest_win'])} / 亏 {_money(m['largest_loss'])}"
+            f"   最大回撤 {_money(m['max_drawdown'], signed=False)}",
+            f"持有天数  平均 {m['avg_hold_days']:.1f}"
+            + (f"   平均 R {m['avg_r_multiple']}" if m["avg_r_multiple"] is not None else ""),
+        ]
+        if m["unrealized_pnl"] is not None:
+            lines.append(f"浮动盈亏  {_money(m['unrealized_pnl'])}")
 
     grouped = result.get("grouped")
     if grouped:
         lines.append(f"\n按{args.group_by}分组（亏损在前）：")
         for bucket in grouped[:15]:
-            lines.append(f"  {bucket['key'][:22]:<22} {bucket['net_pnl']:>+12,.2f}   "
-                         f"{bucket['roundtrips']:>3} 笔  胜率 {bucket['win_rate']:>5.1f}%")
+            tail = (f"（{'/'.join(bucket['currencies'])} 混合，不合并）"
+                    if bucket.get("net_pnl") is None else "")
+            lines.append(f"  {bucket['key'][:22]:<22} {_money(bucket['net_pnl']):>13}   "
+                         f"{bucket['roundtrips']:>3} 笔  胜率 {bucket['win_rate']:>5.1f}%{tail}")
 
-    if result.get("worst"):
+    losers = [t for t in (result.get("worst") or []) if t["net_pnl"] < 0]
+    if losers:
         lines.append("\n亏损最重的交易：")
-        for trip in result["worst"][:5]:
-            if trip["net_pnl"] >= 0:
-                break
+        for trip in losers[:5]:
+            code = f" {trip['currency']}" if len(result.get("currencies") or []) > 1 else ""
             lines.append(f"  {trip['exit_ts'][:10]}  {trip['symbol']:<14} "
-                         f"{trip['net_pnl']:>+12,.2f}  {trip['return_pct']:>+7.2f}%  "
+                         f"{trip['net_pnl']:>+12,.2f}{code}  {trip['return_pct']:>+7.2f}%  "
                          f"持有 {trip['hold_days']:.1f} 天")
 
     if result.get("notes"):
@@ -614,9 +664,11 @@ def cmd_roundtrips(args: argparse.Namespace) -> int:
         trips.sort(key=lambda t: t["return_pct"])
     if args.limit:
         trips = trips[:args.limit]
+    multi = len({t["currency"] for t in trips}) > 1
     rows = [f"{t['exit_ts'][:10]}  {t['symbol']:<14} {t['direction']:<5} "
             f"{t['quantity']:>8,.4g}  {t['entry_price']:>9,.4f} → {t['exit_price']:>9,.4f}  "
-            f"{t['net_pnl']:>+12,.2f}  {t['return_pct']:>+7.2f}%  {t['hold_days']:>6.1f}d"
+            f"{t['net_pnl']:>+12,.2f}{(' ' + t['currency']) if multi else ''}  "
+            f"{t['return_pct']:>+7.2f}%  {t['hold_days']:>6.1f}d"
             for t in trips]
     emit({"count": len(trips), "roundtrips": trips}, args,
          "\n".join(rows) or "没有平仓交易。")
@@ -819,6 +871,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("positions", help="当前持仓（FIFO）")
     _add_filters(p)
     p.add_argument("--mark", action="append", help="AAPL=213.4，可重复，用于算浮动盈亏")
+    p.add_argument("--fx", action="append", help="汇率，如 HKD=0.128")
+    p.add_argument("--base-currency", dest="base_currency")
     _add_common(p)
     p.set_defaults(func=cmd_positions)
 
@@ -826,6 +880,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_filters(p)
     p.add_argument("--group-by", choices=["symbol", "month", "strategy", "tag", "direction"])
     p.add_argument("--mark", action="append")
+    p.add_argument("--fx", action="append",
+                   help="汇率，如 HKD=0.128（1 HKD 折合多少基准币）。多币种时不传则不给合计")
+    p.add_argument("--base-currency", dest="base_currency", help="折算的基准币种，默认 USD")
     _add_common(p)
     p.set_defaults(func=cmd_analyze)
 
@@ -860,7 +917,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except (CliError, sync.SyncError, ValidationError, ValueError) as exc:
+    except (CliError, sync.SyncError, ValidationError,
+            analytics.CurrencyError, ValueError) as exc:
         if getattr(args, "json", False):
             print(json.dumps({"error": str(exc), "command": args.command},
                              ensure_ascii=False, indent=2))
