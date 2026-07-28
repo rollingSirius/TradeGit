@@ -10,8 +10,9 @@ The goal of this skill is not a prettier trade blotter. It is to capture **what 
 were thinking when you placed the trade**, so that months later it can be lined up
 against **what actually happened**. It is built for people who actually trade: jot a
 trade down as you place it, import a broker statement at month end, and ask "where
-exactly did I go wrong" at quarter end. The data lives in your own private repo the
-whole time. The tool does not place orders and does not give investment advice.
+exactly did I go wrong" at quarter end. The data can live in a GitHub private repo
+or in a fully local git repo. The tool does not place orders and does not give
+investment advice.
 
 ## What makes it different
 
@@ -21,12 +22,13 @@ deliberately goes one step further:
 | Capability | Design requirement |
 |---|---|
 | Records the **reasoning**, not just the fill | Thesis, stop/target, conviction, emotion and strategy tags are first-class fields; if you leave the thesis out, the assistant asks for it. |
-| The data is yours | It lives in **your** private GitHub repo. `init` refuses a non-private repo. New laptop? Clone it back and your whole history is there. |
+| The data is yours | Two modes: a Git-backed private repo, or a fully local-only git repo with no remote. |
 | Every revision is preserved | Records are append-only: a correction writes a new version, a deletion writes a tombstone. `git log -p` shows what you thought then and how you revised it. |
 | Broker statements import directly | IBKR (Activity Statement / Flex Query) and Charles Schwab, including dividends, interest and fees. Re-importing the same file is idempotent, and rows that can't be inferred safely stop and ask you. |
 | P&L you can trust | FIFO lot matching, net of fees, handling shorts, partial exits, position flips and option multipliers. Tests cross-check the numbers against IBKR's own `Realized P/L` column. |
 | Honest about currencies | A mixed HK/US book never has HKD added to USD. Either it reports per currency, or you supply the rates — it will not hand you a plausible-looking wrong number. |
 | Review gives facts, not advice | It surfaces falsifiable observations like "losers held 34 days on average vs 21 for winners" — never a buy or sell recommendation. |
+| Reports are portable | `tradegit report --since 90d --markdown` writes Markdown; `--pdf --output review.pdf` writes a PDF. |
 | Zero dependencies | python3 and git. No third-party packages, no account, no subscription. |
 | Credentials never hit disk | It only uses the `gh` / `GITHUB_TOKEN` credentials your environment already has. The token never enters the config file, argv, `.git/config`, or an error message. |
 
@@ -34,15 +36,15 @@ deliberately goes one step further:
 
 ```
 You:     Bought 100 AAPL at 213.45 today, breakout above the range, stop at 205
-Claude:  ✓ Logged and synced to yourname/trading-journal
+Assistant:  ✓ Logged and synced to yourname/trading-journal
 
 You:     Import the Schwab statement I just downloaded
-Claude:  Detected Schwab, 9 new records (2026-05-01 → 2026-07-10).
+Assistant:  Detected Schwab, 9 new records (2026-05-01 → 2026-07-10).
          One "Journaled Shares" row needs you to confirm what the transfer was —
          want to handle it now?
 
 You:     What was my worst loss this quarter?
-Claude:  NVDA, −4,114.50, held 2026-05-20 to 06-02. The entry thesis says
+Assistant:  NVDA, −4,114.50, held 2026-05-20 to 06-02. The entry thesis says
          "buying the dip" and no stop was recorded. Over this period your losers
          were held 34 days on average versus 21 days for winners.
 ```
@@ -50,8 +52,8 @@ Claude:  NVDA, −4,114.50, held 2026-05-20 to 06-02. The entry thesis says
 **Why not a spreadsheet or a notes app**: the value of a trading journal is in
 lining up **what you thought** with **what happened**. Git records who changed what
 and when for free, so a trade's thesis, its post-mortem and the mistake you
-eventually named are all preserved as a trail. And a private repo means the data is
-yours — clone it and it comes back.
+eventually named are all preserved as a trail. A private repo is best for multi-device
+sync; local-only is best when you want to start on one machine without connecting GitHub.
 
 ---
 
@@ -79,20 +81,21 @@ yours — clone it and it comes back.
 
 - Records every trade along with **the reason at the time**, stop/target, conviction, emotion, tags
 - Imports IBKR / Schwab statements, deduplicated and normalized to one schema
-- Syncs everything to your private GitHub repo, keeping a local clone for offline analysis
+- Syncs through a private GitHub repo, or stays fully local
 - FIFO lot matching for realized P&L, win rate, profit factor, expectancy, max drawdown, R-multiples
 - Lets you append a post-mortem and a named mistake later; `git log -p` shows the whole evolution
+- Generates deterministic Markdown / PDF review reports
 
 **Doesn't**
 
 - **No order placement, no broker trading API.** You place the order, then log it.
 - **No investment advice.** It states data ("4 of the last 6 trades in this name lost money"), never a recommendation.
-- **No charts, report files or dashboards.** See [Visualization](#visualization).
+- **No charts or interactive dashboards.** See [Visualization](#visualization).
 
 ### Visualization
 
 Deliberately left out. Every analysis command emits `--json`, so you can hand the
-data to whatever renderer you have (Claude's charting, an Artifact, your own
+data to whatever renderer you have (Claude / Workbuddy charting, an Artifact, your own
 dashboard, a BI tool):
 
 | Output | What it plots well |
@@ -121,15 +124,15 @@ The installer detects which host tools you have and registers the skill:
 
 | Target | Installed to | How to trigger |
 |---|---|---|
-| Claude Code / Desktop / claude.ai | `~/.claude/skills/tradegit` | Just say "log a trade" |
-| Codex | `~/.codex/AGENTS.md` + `~/.codex/prompts/tradegit.md` | Just say it, or `/tradegit` |
+| Claude Code / Desktop / claude.ai / Workbuddy | `~/.claude/skills/tradegit` | Just say "log a trade" |
+| Codex / Workbuddy | `~/.codex/AGENTS.md` + `~/.codex/prompts/tradegit.md` | Just say it, or `/tradegit` |
 | Command line | `~/.local/bin/tradegit` | `tradegit <command>` |
 
 Other options:
 
 ```bash
-./install.sh --claude              # Claude only
-./install.sh --codex               # Codex only
+./install.sh --claude              # Claude / Workbuddy only
+./install.sh --codex               # Codex / Workbuddy only
 ./install.sh --project ~/myrepo    # install as a project skill (.claude/skills/)
 ./install.sh --copy                # copy files instead of symlinking
 ./install.sh --no-bin              # skip the ~/.local/bin symlink
@@ -146,6 +149,8 @@ the `gh` CLI or a `GITHUB_TOKEN`.
 
 ## First-time setup
 
+### Git-backed private repo
+
 ```bash
 gh auth login          # or export GITHUB_TOKEN=<token with repo scope>
 tradegit init          # creates <you>/trading-journal (private) and clones it
@@ -161,8 +166,25 @@ tradegit init          # creates <you>/trading-journal (private) and clones it
 `init` checks repo visibility and **refuses anything that isn't private**. That is
 deliberate.
 
-Inside Claude / Codex the assistant asks you before creating the repo — that step
+Inside Claude / Codex / Workbuddy the assistant asks you before creating the repo — that step
 creates something real under your GitHub account.
+
+### Local-only
+
+```bash
+tradegit init --local
+```
+
+This creates `~/.tradegit/repo/` as a local git repository. Writes are committed
+locally, no remote is configured, and nothing is pushed.
+
+### Try the sample journal
+
+```bash
+TRADEGIT_HOME="$(pwd)/examples/sample-journal" python3 -m tradegit report --since 180d --markdown
+```
+
+`examples/sample-journal/` is a fictional local-only journal and does not require GitHub.
 
 ---
 
@@ -221,6 +243,8 @@ tradegit analyze --since ytd --group-by symbol  # by symbol (losses first)
 tradegit roundtrips --sort pnl --limit 10       # 10 biggest losers
 tradegit positions --mark AAPL=213.4            # positions (marks give unrealized P&L)
 tradegit analyze --fx HKD=0.128 --base-currency USD   # mixed-currency book, one base
+tradegit report --since 90d --markdown          # Markdown review report
+tradegit report --since 180d --pdf --output review.pdf
 ```
 
 `analyze` adds a few **observations** derived from the data:
@@ -250,12 +274,13 @@ More recipes and a SQL cookbook in [`reference/analysis.md`](reference/analysis.
 
 | Command | Purpose |
 |---|---|
-| `init` | Connect GitHub, create/reuse the private repo, clone it locally |
+| `init` | Create/connect a journal; `--local` creates a fully local journal |
 | `log` | Record a trade (or a batch via `--json-input`) |
 | `import` | Import a broker statement; `--dry-run` to preview |
 | `list` | List records with any filter |
 | `positions` | Current positions (FIFO); `--mark` for unrealized P&L |
 | `analyze` | P&L metrics, grouped stats, review observations |
+| `report` | Markdown / PDF review report |
 | `roundtrips` | Closed trades, sortable by P&L or return |
 | `sql` | Read-only SQL over the local index, table `trades` |
 | `amend` | Append a corrected version (history is not rewritten) |
@@ -269,7 +294,7 @@ More recipes and a SQL cookbook in [`reference/analysis.md`](reference/analysis.
 **Common flags**
 
 - Filters: `--since` `--until` `--symbol/-s` `--account` `--broker` `--strategy` `--tag`
-- Time syntax: `30d` / `3w` / `3m` / `1y` / `ytd` / `mtd` / `today` / `2026-01-01`
+- Time syntax: `30d` / `90d` / `180d` / `360d` / `3w` / `3m` / `1y` / `ytd` / `mtd` / `today` / `2026-01-01`
 - `--json`: structured output (this is what the assistant uses)
 - `--no-sync`: skip the remote check (offline)
 - `--no-push`: commit locally without pushing
@@ -301,8 +326,8 @@ To add a broker: copy the shape of `tradegit/importers/schwab.py` and register i
 
 ```
 ~/.tradegit/
-  config.json                            repo slug, default account, sync prefs
-  repo/                                  ← git clone of your private repo (the real data)
+  config.json                            storage mode, repo slug, default account, sync prefs
+  repo/                                  ← git repo: GitHub clone or local-only
     journal/2026/2026-05.jsonl           ← one record per line, append-only
     journal/2026/2026-06.jsonl
     manifest.json                        record counts, date range (generated)
@@ -367,20 +392,27 @@ Tests cross-check the engine against IBKR's own `Realized P/L` column.
 
 ## Sync and multiple machines
 
-The local directory *is* the clone of your private repo, so consistency is git's
-problem, not a protocol I invented:
+TradeGit has two storage modes:
+
+| Mode | Init | Behavior |
+|---|---|---|
+| Git-backed private repo | `tradegit init` | Local clone of a GitHub private repo; reads/writes check remote drift and writes push by default. |
+| Local-only | `tradegit init --local` | Plain local git repo; writes commit locally, no remote is configured, nothing is pushed. |
 
 - **Checking for remote changes** = `git ls-remote` against local HEAD. It fetches no
-  objects and takes tens of milliseconds, which is why every read and write does it
-  by default and rebases automatically when behind.
-- **Two machines journaling at once** = both append; `merge=union` resolves it.
+  objects and takes tens of milliseconds, which is why GitHub mode reads and writes
+  do it by default and rebase automatically when behind.
+- **Two machines journaling at once** = in GitHub mode, both append; `merge=union` resolves it.
 - **Offline** = `--no-sync` (skip the check) or `--no-push` (commit only); a later
   `tradegit sync` pushes whatever piled up.
+- **Fully local** = after `tradegit init --local`, `tradegit sync` only makes sure
+  the local git commit exists.
 
 ```bash
 tradegit check          # has the private repo moved?
 tradegit check --pull   # and pull if so
 tradegit sync           # pull + push
+tradegit init --local   # local-only git journal
 ```
 
 ---
@@ -394,7 +426,7 @@ tradegit sync           # pull + push
   authentication goes through a per-invocation credential helper that reads the token
   from the environment, so `ps` on a shared machine cannot see it. All git output is
   redacted before it can reach an error message.
-- **`init` refuses a non-private repo.**
+- In GitHub mode, **`init` refuses a non-private repo**; local-only mode never connects a remote.
 - `~/.tradegit` is created `0700` — it holds financial records, and the default umask
   would leave it readable by other users on the machine.
 - `tradegit sql` is read-only: the index is refreshed, then reopened read-only, so a
@@ -442,8 +474,8 @@ repo standing in for GitHub (log → dedup → import → analyze → amend → 
 change and pull → push commits left behind while offline).
 
 ```
-SKILL.md              Claude entry point (skill definition)
-AGENTS.md             Codex entry point
+SKILL.md              Claude / Workbuddy entry point (skill definition)
+AGENTS.md             Codex / Workbuddy entry point
 README.md / .en.md    Chinese / English docs
 install.sh            install / uninstall
 scripts/tradegit      CLI launcher

@@ -2,7 +2,7 @@
 
 Auth uses whatever the host tool already has, in this order:
 
-1. ``gh`` CLI (Claude Code and Codex environments usually ship it logged in)
+1. ``gh`` CLI (Claude Code, Codex, and Workbuddy environments usually ship it logged in)
 2. ``GITHUB_TOKEN`` / ``GH_TOKEN`` in the environment
 3. an existing git credential helper (plain ``git`` over https/ssh)
 
@@ -202,12 +202,16 @@ def ensure_identity(cfg: Config) -> None:
 # ---------------------------------------------------------------------------
 
 def local_head(cfg: Config) -> str | None:
+    if not cfg.git_initialized:
+        return None
     proc = git(cfg, "rev-parse", "HEAD", check=False)
     return proc.stdout.strip() or None if proc.returncode == 0 else None
 
 
 def remote_head(cfg: Config) -> str | None:
     """Remote HEAD without fetching objects — cheap enough for every write."""
+    if cfg.local_only:
+        return None
     branch = current_branch(cfg) or "HEAD"
     proc = git_remote(cfg, "ls-remote", "origin", branch, check=False)
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -216,30 +220,49 @@ def remote_head(cfg: Config) -> str | None:
 
 
 def current_branch(cfg: Config) -> str | None:
+    if not cfg.git_initialized:
+        return None
     proc = git(cfg, "rev-parse", "--abbrev-ref", "HEAD", check=False)
     name = proc.stdout.strip()
     return name if name and name != "HEAD" else None
 
 
 def dirty(cfg: Config) -> list[str]:
+    if not cfg.git_initialized:
+        return []
     proc = git(cfg, "status", "--porcelain", check=False)
     return [line for line in proc.stdout.splitlines() if line.strip()]
 
 
 def check(cfg: Config) -> dict[str, Any]:
-    """Is the local clone in sync with the private repo?
+    """Is the local journal in sync with its configured storage mode?
 
-    Called before any write, and by ``tradegit check`` before analysis, so a
-    trade logged from another machine is never silently missed.
+    Called before any write, and by ``tradegit check`` before analysis. In
+    GitHub mode, a trade logged from another machine is never silently missed.
     """
     if not cfg.initialized:
         return {"initialized": False, "in_sync": False,
                 "message": "not initialized — run `tradegit init`"}
     local = local_head(cfg)
-    remote = remote_head(cfg)
     state = read_state(cfg)
+    if cfg.local_only:
+        return {
+            "initialized": True,
+            "mode": "local",
+            "repo": cfg.repo_slug or "local",
+            "branch": current_branch(cfg),
+            "local_head": local,
+            "remote_head": None,
+            "remote_reachable": None,
+            "uncommitted": dirty(cfg),
+            "last_sync": state.get("last_sync"),
+            "in_sync": True,
+            "message": "local-only journal — no remote configured",
+        }
+    remote = remote_head(cfg)
     result = {
         "initialized": True,
+        "mode": cfg.storage_mode,
         "repo": cfg.repo_slug,
         "branch": current_branch(cfg),
         "local_head": local,
@@ -267,6 +290,8 @@ def check(cfg: Config) -> dict[str, Any]:
 def pull(cfg: Config) -> dict[str, Any]:
     if not cfg.initialized:
         raise SyncError("not initialized — run `tradegit init`")
+    if cfg.local_only:
+        return {"changed": False, "message": "local-only journal — nothing to pull"}
     before = local_head(cfg)
     proc = git_remote(cfg, "pull", "--rebase", "--autostash", "origin",
                       current_branch(cfg) or "main", check=False)
@@ -312,6 +337,12 @@ def _resolve_conflicts(cfg: Config) -> bool | None:
 def commit_and_push(cfg: Config, message: str, *, push: bool | None = None) -> dict[str, Any]:
     if not cfg.initialized:
         raise SyncError("not initialized — run `tradegit init`")
+    if cfg.local_only and not cfg.git_initialized:
+        return {
+            "committed": False,
+            "pushed": False,
+            "message": "local sample journal has no git repository; records were not committed",
+        }
     ensure_identity(cfg)
     git(cfg, "add", "-A")
     staged = git(cfg, "diff", "--cached", "--name-only", check=False).stdout.split()
@@ -323,6 +354,16 @@ def commit_and_push(cfg: Config, message: str, *, push: bool | None = None) -> d
         result = {"committed": False, "message": "nothing to commit"}
 
     should_push = cfg.auto_push if push is None else push
+    if cfg.local_only:
+        result["pushed"] = False
+        if result.get("committed"):
+            result["message"] = "committed locally (local-only mode)"
+        else:
+            result["message"] = "nothing to commit (local-only mode)"
+        state = read_state(cfg)
+        state.update({"last_sync": _now(), "last_local_head": local_head(cfg)})
+        write_state(cfg, state)
+        return result
     if not should_push:
         result["pushed"] = False
         result["message"] = "committed locally (auto_push disabled)"

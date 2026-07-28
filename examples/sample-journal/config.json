@@ -1,0 +1,15 @@
+{
+  "repo_slug": "local",
+  "repo_url": "",
+  "storage_mode": "local",
+  "default_account": "sample",
+  "default_currency": "USD",
+  "auto_push": false,
+  "check_remote_on_write": false,
+  "accounts": {
+    "sample": {
+      "label": "Sample Journal"
+    }
+  },
+  "schema_version": 1
+}

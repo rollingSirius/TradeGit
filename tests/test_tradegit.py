@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+SAMPLE = ROOT / "examples" / "sample-journal"
 sys.path.insert(0, str(ROOT))
 
 from tradegit import analytics, importers, store, sync  # noqa: E402
@@ -377,6 +379,46 @@ class TestMultiCurrency(unittest.TestCase):
         self.assertTrue(any("多个币种" in n for n in notes))
 
 
+class TestSampleJournal(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name) / "sample-journal"
+        shutil.copytree(SAMPLE, self.home, ignore=shutil.ignore_patterns("cache"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_sample(self, *args, expect=0):
+        proc = subprocess.run(
+            [sys.executable, "-m", "tradegit", *args],
+            cwd=ROOT, capture_output=True, text=True,
+            env={**os.environ, "TRADEGIT_HOME": str(self.home), "PYTHONPATH": str(ROOT)})
+        self.assertEqual(proc.returncode, expect,
+                         f"args={args}\nstdout={proc.stdout}\nstderr={proc.stderr}")
+        return proc
+
+    def test_sample_journal_reports_without_github(self):
+        status = json.loads(self.run_sample("status", "--json").stdout)
+        self.assertTrue(status["initialized"])
+        self.assertEqual(status["mode"], "local")
+        self.assertEqual(status["records"], 11)
+        self.assertEqual(status["sync"]["uncommitted"], [])
+
+        report = json.loads(self.run_sample("report", "--since", "180d", "--json").stdout)
+        self.assertEqual(report["records"], 11)
+        self.assertIn("TradeGit keeps the facts", report["markdown"])
+        self.assertIn("AMD", report["markdown"])
+
+    def test_sample_journal_pdf_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "sample.pdf"
+            out = json.loads(self.run_sample(
+                "report", "--since", "180d", "--pdf", "--output", str(target), "--json").stdout)
+            self.assertEqual(out["format"], "pdf")
+            self.assertTrue(target.exists())
+            self.assertTrue(target.read_bytes().startswith(b"%PDF-1.4"))
+
+
 class TestSecurity(unittest.TestCase):
     """Guarantees the README makes to users. Do not let these regress."""
 
@@ -596,6 +638,42 @@ class TestCliEndToEnd(unittest.TestCase):
         self.assertTrue(out["initialized"])
         self.assertGreater(out["records"], 5)
         self.assertTrue(out["sync"]["in_sync"])
+
+
+class TestLocalModeCli(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name) / "home"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_cli(self, *args, expect=0):
+        proc = subprocess.run(
+            [sys.executable, "-m", "tradegit", *args],
+            cwd=ROOT, capture_output=True, text=True,
+            env={**os.environ, "TRADEGIT_HOME": str(self.home), "PYTHONPATH": str(ROOT)})
+        self.assertEqual(proc.returncode, expect,
+                         f"args={args}\nstdout={proc.stdout}\nstderr={proc.stderr}")
+        return json.loads(proc.stdout) if "--json" in args else proc.stdout
+
+    def test_local_init_log_and_report(self):
+        init = self.run_cli("init", "--local", "--account", "paper", "--json")
+        self.assertEqual(init["mode"], "local")
+        self.assertTrue((self.home / "repo" / ".git").exists())
+        self.assertFalse(init["commit"]["pushed"])
+
+        logged = self.run_cli("log", "--symbol", "AAPL", "--side", "BUY", "--qty", "10",
+                              "--price", "200", "--why", "local test", "--json")
+        self.assertEqual(logged["written"], 1)
+        self.assertFalse(logged["push"]["pushed"])
+
+        status = self.run_cli("status", "--json")
+        self.assertEqual(status["mode"], "local")
+        self.assertEqual(status["sync"]["message"], "local-only journal — no remote configured")
+
+        report = self.run_cli("report", "--since", "30d", "--json")
+        self.assertIn("TradeGit keeps the facts", report["markdown"])
 
 
 if __name__ == "__main__":

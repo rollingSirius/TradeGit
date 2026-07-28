@@ -3,8 +3,8 @@
 Layout on disk::
 
     ~/.tradegit/                 TRADEGIT_HOME
-      config.json                which repo, default account, sync prefs
-      repo/                      git clone of the private GitHub repo
+      config.json                storage mode, repo, default account, sync prefs
+      repo/                      GitHub clone or local-only git repo
       cache/index.sqlite         derived index, rebuilt when HEAD moves
       cache/state.json           last-seen local/remote SHAs
       imports/                   copies of raw broker files that were imported
@@ -30,8 +30,9 @@ def home() -> Path:
 class Config:
     """Persisted user configuration."""
 
-    repo_slug: str = ""          # "owner/name" on GitHub
+    repo_slug: str = ""          # "owner/name" on GitHub, or "local" in local-only mode
     repo_url: str = ""           # remote URL actually used by git
+    storage_mode: str = "github" # "github" or "local"
     default_account: str = "main"
     default_currency: str = "USD"
     auto_push: bool = True       # push right after every write
@@ -104,7 +105,15 @@ class Config:
 
     @property
     def initialized(self) -> bool:
+        return (self.repo_dir / ".git").exists() or (self.local_only and self.journal_dir.exists())
+
+    @property
+    def git_initialized(self) -> bool:
         return (self.repo_dir / ".git").exists()
+
+    @property
+    def local_only(self) -> bool:
+        return self.storage_mode == "local"
 
 
 def read_state(cfg: Config) -> dict[str, Any]:

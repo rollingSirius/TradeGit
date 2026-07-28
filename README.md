@@ -8,8 +8,8 @@ English: [README.en.md](README.en.md)
 
 这个 skill 的目标不是做一张更好看的交易流水表，而是让 AI 工具帮你把**每笔交易当时的
 判断**留下来，并在几个月后能和**实际结果**对上。它面向真实在交易的人：随手记一笔、
-月底导一次券商对账单、季度复盘时问"我到底错在哪"。数据全程在你自己的私有仓库里，
-工具不下单、不给投资建议。
+月底导一次券商对账单、季度复盘时问"我到底错在哪"。数据可以放在 GitHub 私有仓库，
+也可以完全留在本地；工具不下单、不给投资建议。
 
 ## 核心定位
 
@@ -18,12 +18,13 @@ English: [README.en.md](README.en.md)
 | 能力 | 设计要求 |
 |---|---|
 | 记录**理由**而不只是流水 | 交易理由、止损/目标、信心度、情绪、策略标签都是一等字段；没写理由时 AI 会主动问一句。 |
-| 数据是你的 | 存在你自己的 GitHub **私有**仓库，非 private 直接拒绝初始化；换电脑 clone 回来就是全部历史。 |
+| 数据是你的 | 两种模式：Git-backed private repo，或完全本地的 local-only git 仓库；换电脑时 private repo 可以 clone 回来，本地模式则不碰远端。 |
 | 改动全程留痕 | 记录只追加，更正写新版本、删除写作废标记；`git log -p` 能看到你当时怎么想、后来怎么改。 |
 | 券商流水直接导入 | IBKR（对账单 / Flex Query）、嘉信理财，含股息利息税费；重复导入幂等；猜不准的行会停下来问你。 |
 | 盈亏算得住 | FIFO 配对，含手续费、支持做空/部分平仓/多翻空/期权乘数；测试用 IBKR 自己的 `Realized P/L` 列做交叉验证。 |
 | 多币种不糊弄 | 港美股混合时不会把 HKD 和 USD 加在一起——要么按币种分开给，要么你传汇率折算，绝不给一个看起来合理的错数。 |
 | 复盘给事实不给建议 | 输出"亏损单平均持有 34 天 vs 盈利单 21 天"这类可证伪的观察，不给买卖推荐。 |
+| 复盘可交付 | `tradegit report --since 90d --markdown` 生成 Markdown，`--pdf --output review.pdf` 生成 PDF。 |
 | 零依赖 | 只要 python3 和 git，没有任何第三方包，不需要账号、不需要订阅。 |
 | 凭证不落盘 | 只调用宿主环境已有的 `gh` / `GITHUB_TOKEN`，token 不进配置、不进 argv、不进 `.git/config`、不进报错信息。 |
 
@@ -31,20 +32,21 @@ English: [README.en.md](README.en.md)
 
 ```
 你：  今天 213.45 买了 100 股 AAPL，突破前高，止损 205
-Claude： ✓ 已记录并同步到 yourname/trading-journal
+Assistant： ✓ 已记录并同步到 yourname/trading-journal
 
 你：  导入一下我下载的嘉信流水
-Claude： 识别为 Schwab，新增 9 条（2026-05-01 → 2026-07-10）。
+Assistant： 识别为 Schwab，新增 9 条（2026-05-01 → 2026-07-10）。
         有 1 行 "Journaled Shares" 需要你确认是什么划转，要现在处理吗？
 
 你：  这个季度哪笔亏得最多？
-Claude： NVDA，−4,114.50，2026-05-20 持有到 06-02。开仓理由写的是"回调买入"，
+Assistant： NVDA，−4,114.50，2026-05-20 持有到 06-02。开仓理由写的是"回调买入"，
         没有记止损。这段时间亏损单平均持有 34 天、盈利单 21 天。
 ```
 
 **为什么不是 Excel 或笔记软件**：交易日志的价值在于**当时想的**和**后来发生的**能
 对上。Git 天然记录"你什么时候改了什么"，所以一笔交易的理由、事后复盘、认定的错误，
-演变过程全都留痕；而私有仓库意味着数据是你的，换电脑 clone 一下就回来了。
+演变过程全都留痕；GitHub 私有仓库适合多设备同步，local-only 模式适合只想先在本机
+试起来的人。
 
 ---
 
@@ -72,20 +74,21 @@ Claude： NVDA，−4,114.50，2026-05-20 持有到 06-02。开仓理由写的�
 
 - 记录每一笔交易，以及**当时的理由**、止损/目标、信心度、情绪、标签
 - 导入 IBKR / 嘉信理财的对账单，去重、归一到同一套字段
-- 全部同步到你的 GitHub 私有仓库；本地留一份 clone 供离线分析
+- 用 GitHub 私有仓库同步，或完全本地保存
 - FIFO 配对开平仓，算已实现盈亏、胜率、盈亏因子、期望值、最大回撤、R 倍数
 - 事后追加复盘和错误归因，`git log -p` 能看到完整演变
+- 生成 Markdown / PDF 复盘报告
 
 **不做**
 
 - **不下单、不连券商交易接口。** 你自己下单，回来记一笔。
 - **不给投资建议。** 只陈述数据（"这个标的过去 6 笔亏了 4 笔"），不推荐买卖。
-- **不生成图表、报告文件或面板。** 见下方[可视化](#可视化)。
+- **不生成图表或交互面板。** 见下方[可视化](#可视化)。
 
 ### 可视化
 
 刻意留在外面。所有分析命令都能 `--json` 输出结构化数据，交给你手上任何渲染组件
-（Claude 的图表能力、Artifact、你自己的看板、BI 工具）：
+（Claude / Workbuddy 的图表能力、Artifact、你自己的看板、BI 工具）：
 
 | 输出 | 适合画什么 |
 |---|---|
@@ -112,15 +115,15 @@ cd ~/TradeGit && ./install.sh
 
 | 目标 | 装到哪 | 怎么触发 |
 |---|---|---|
-| Claude Code / Desktop / claude.ai | `~/.claude/skills/tradegit` | 直接说「记一笔交易」 |
-| Codex | `~/.codex/AGENTS.md` + `~/.codex/prompts/tradegit.md` | 直接说，或 `/tradegit` |
+| Claude Code / Desktop / claude.ai / Workbuddy | `~/.claude/skills/tradegit` | 直接说「记一笔交易」 |
+| Codex / Workbuddy | `~/.codex/AGENTS.md` + `~/.codex/prompts/tradegit.md` | 直接说，或 `/tradegit` |
 | 命令行 | `~/.local/bin/tradegit` | `tradegit <command>` |
 
 其他用法：
 
 ```bash
-./install.sh --claude              # 只装 Claude
-./install.sh --codex               # 只装 Codex
+./install.sh --claude              # 只装 Claude / Workbuddy
+./install.sh --codex               # 只装 Codex / Workbuddy
 ./install.sh --project ~/myrepo    # 装成某个项目的 skill（.claude/skills/）
 ./install.sh --copy                # 复制文件而不是软链
 ./install.sh --no-bin              # 不往 ~/.local/bin 放软链
@@ -136,6 +139,8 @@ cd ~/TradeGit && ./install.sh
 
 ## 首次配置
 
+### Git-backed private repo
+
 ```bash
 gh auth login          # 或 export GITHUB_TOKEN=<有 repo 权限的 token>
 tradegit init          # 创建 <你的账号>/trading-journal（private）并克隆到本地
@@ -150,8 +155,26 @@ tradegit init          # 创建 <你的账号>/trading-journal（private）并�
 
 `init` 会检查仓库可见性，**不是 private 就直接拒绝**。这是有意为之。
 
-在 Claude / Codex 里，agent 会在创建仓库前先问你一句 —— 那是在你的 GitHub 账户下
+在 Claude / Codex / Workbuddy 里，agent 会在创建仓库前先问你一句 —— 那是在你的 GitHub 账户下
 真实创建东西。
+
+### Local-only
+
+```bash
+tradegit init --local
+```
+
+这会在 `~/.tradegit/repo/` 创建一个本地 git 仓库，只 commit，不配置 remote，不 push。
+适合先试用、只在单机记录、或暂时不想连接 GitHub 的场景。之后要迁移到远端，可以把
+这个目录作为普通 git 仓库加 remote 再推送。
+
+### Try the sample journal
+
+```bash
+TRADEGIT_HOME="$(pwd)/examples/sample-journal" python3 -m tradegit report --since 180d --markdown
+```
+
+`examples/sample-journal/` 是一份 fictional local-only 样例账本，不需要 GitHub。
 
 ---
 
@@ -209,6 +232,8 @@ tradegit analyze --since ytd --group-by symbol  # 按标的（亏损排在最前
 tradegit roundtrips --sort pnl --limit 10       # 亏得最多的 10 笔
 tradegit positions --mark AAPL=213.4            # 持仓（给了现价才算浮动盈亏）
 tradegit analyze --fx HKD=0.128 --base-currency USD   # 港美股混合，折算到统一币种
+tradegit report --since 90d --markdown          # 输出 Markdown 复盘报告
+tradegit report --since 180d --pdf --output review.pdf
 ```
 
 `analyze` 会附带几条从数据里得出的**观察**，例如：
@@ -234,12 +259,13 @@ tradegit amend <id> --review "回调买入没有配合量能确认，属于接�
 
 | 命令 | 作用 |
 |---|---|
-| `init` | 连接 GitHub，创建/复用私有仓库并克隆到本地 |
+| `init` | 创建/连接交易日志仓库；`--local` 为完全本地模式 |
 | `log` | 记录一笔交易（或用 `--json-input` 批量） |
 | `import` | 导入券商流水，`--dry-run` 预览 |
 | `list` | 列出记录，支持全部筛选条件 |
 | `positions` | 当前持仓（FIFO），`--mark` 给现价算浮动盈亏 |
 | `analyze` | 盈亏指标 + 分组统计 + 复盘观察 |
+| `report` | 生成 Markdown / PDF 复盘报告 |
 | `roundtrips` | 平仓明细，可按盈亏/收益率排序 |
 | `sql` | 对本地索引跑只读 SQL，表名 `trades` |
 | `amend` | 追加一条更正版本（不改历史） |
@@ -253,7 +279,7 @@ tradegit amend <id> --review "回调买入没有配合量能确认，属于接�
 **通用参数**
 
 - 筛选：`--since` `--until` `--symbol` `--account` `--broker` `--strategy` `--tag`
-- 时间写法：`30d` / `3w` / `3m` / `1y` / `ytd` / `mtd` / `today` / `2026-01-01`
+- 时间写法：`30d` / `90d` / `180d` / `360d` / `3w` / `3m` / `1y` / `ytd` / `mtd` / `today` / `2026-01-01`
 - `--json`：结构化输出（agent 就是这么用的）
 - `--no-sync`：跳过远端检查（离线时用）
 - `--no-push`：只提交本地，不推送
@@ -285,8 +311,8 @@ tradegit amend <id> --review "回调买入没有配合量能确认，属于接�
 
 ```
 ~/.tradegit/
-  config.json                            仓库地址、默认账户、同步偏好
-  repo/                                  ← 私有仓库的 git clone（真实数据）
+  config.json                            存储模式、仓库地址、默认账户、同步偏好
+  repo/                                  ← git 仓库（GitHub clone 或 local-only）
     journal/2026/2026-05.jsonl           ← 一行一条记录，只追加
     journal/2026/2026-06.jsonl
     manifest.json                        记录数/时间范围（自动生成）
@@ -343,18 +369,25 @@ FIFO 配对开平仓：同向成交开新批次，反向成交按时间顺序平
 
 ## 同步与多设备
 
-本地目录就是私有仓库的 git clone，所以一致性问题交给 git 解决：
+TradeGit 有两种存储模式：
+
+| 模式 | 初始化 | 行为 |
+|---|---|---|
+| Git-backed private repo | `tradegit init` | 本地是 GitHub 私有仓库的 clone；每次读写前检查远端，写入后默认 push。 |
+| Local-only | `tradegit init --local` | 本地是一个普通 git 仓库；每次写入只 commit，不配置 remote，不 push。 |
 
 - **检查远端有无变动** = `git ls-remote` 比对 HEAD，不拉取任何对象，几十毫秒 ——
-  所以每个读写命令默认都会跑一次，落后就自动 rebase 拉取
-- **多台机器同时记** = 两边都追加，`merge=union` 自动合并，正常不会有冲突
+  所以 GitHub 模式下每个读写命令默认都会跑一次，落后就自动 rebase 拉取
+- **多台机器同时记** = GitHub 模式下两边都追加，`merge=union` 自动合并，正常不会有冲突
 - **离线** = 加 `--no-sync`（跳过检查）或 `--no-push`（只提交本地），
   恢复网络后 `tradegit sync` 会把积压的提交推上去
+- **完全本地** = `tradegit init --local` 后不需要 GitHub；`tradegit sync` 只补一次本地 commit
 
 ```bash
 tradegit check          # 远端有没有本地没有的变动
 tradegit check --pull   # 有就直接拉
 tradegit sync           # 拉取 + 推送
+tradegit init --local   # 只在本地创建 git 日志仓库
 ```
 
 ---
@@ -366,7 +399,7 @@ tradegit sync           # 拉取 + 推送
 - **token 不落盘、不进 argv。** 存进 git 的 remote URL 永远不含凭证（否则会明文留在
   `.git/config` 里）；认证走一次性的 credential helper，token 只经环境变量传递，
   所以同机其他用户 `ps` 看不到。所有 git 输出在进入报错信息前都会做脱敏。
-- **`init` 拒绝非 private 仓库。**
+- GitHub 模式下 **`init` 拒绝非 private 仓库**；local-only 模式不连接远端。
 - `~/.tradegit` 以 `0700` 创建 —— 里面是财务数据，默认 umask 会让它对同机其他用户可读。
 - `tradegit sql` 只读：索引会先刷新，再以只读模式重开，查询无法改动任何数据。
 - **仓库里只放交易记录。** 不要写入 token、账户密码、券商登录信息。
@@ -387,7 +420,7 @@ tradegit sync           # 拉取 + 推送
 | `没有检测到已连接的 GitHub 账户` | `gh auth login`，或 `export GITHUB_TOKEN=<有 repo 权限的 token>` |
 | `创建仓库需要 gh CLI 登录` | 装 `gh` 并登录，或先在 GitHub 上手工建好 private 仓库再 `--use-existing` |
 | `xxx 当前是 public 仓库` | 到 GitHub 设置里改成 private 再重跑 `init` |
-| `TradeGit 尚未初始化` | `tradegit init` |
+| `TradeGit 尚未初始化` | `tradegit init`，或只想本地使用时 `tradegit init --local` |
 | 推送失败 | 记录已提交在本地，联网后 `tradegit sync` |
 | `pull failed and could not be auto-resolved` | 非 JSONL 文件冲突，到 `~/.tradegit/repo` 手工解决 |
 | 分析结果和券商对不上 | 多半是缺了现金事件或某段流水没导入；`tradegit list --kind cash` 看一下 |
@@ -404,14 +437,14 @@ tradegit sync           # 拉取 + 推送
 python3 -m unittest tests.test_tradegit -v
 ```
 
-35 个测试，覆盖字段归一、FIFO（多头/空头/部分平仓/多翻空/期权乘数）、三种券商
+测试覆盖字段归一、FIFO（多头/空头/部分平仓/多翻空/期权乘数）、三种券商
 解析器、存储去重与索引刷新、凭证不外泄的安全保证，以及一整套用本地 bare 仓库当
 "GitHub"的 CLI 端到端流程（记录 → 去重 → 导入 → 分析 → 更正 → 检测远端变动并拉取
-→ 补推离线提交）。
+→ 补推离线提交），并覆盖 local-only 与 Markdown/PDF 报告输出。
 
 ```
-SKILL.md              Claude 入口（skill 定义）
-AGENTS.md             Codex 入口
+SKILL.md              Claude / Workbuddy 入口（skill 定义）
+AGENTS.md             Codex / Workbuddy 入口
 README.md / .en.md    中 / 英文文档
 install.sh            安装 / 卸载
 scripts/tradegit      CLI 启动器
@@ -421,9 +454,11 @@ tradegit/             实现（零第三方依赖）
   store.py            JSONL 存储 + SQLite 派生索引
   sync.py             GitHub 连接、远端漂移检测、冲突自动解决
   analytics.py        FIFO 配对与绩效指标
+  reporting.py        Markdown / PDF 复盘报告
   config.py           配置与路径
   scaffold.py         初始化时写进私有仓库的文件
   importers/          ibkr / schwab / generic
+examples/sample-journal local-only 样例账本
 reference/            schema / brokers / analysis / storage
 tests/                测试与券商样例文件
 ```

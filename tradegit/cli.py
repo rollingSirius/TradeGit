@@ -1,7 +1,7 @@
 """TradeGit command line interface.
 
 Every command accepts ``--json`` and prints a machine-readable object, which
-is what the Claude/Codex skill uses. Without it, output is a short human
+is what the Claude/Codex/Workbuddy skill uses. Without it, output is a short human
 summary.
 """
 
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import __version__, analytics, importers, scaffold, store, sync
+from . import __version__, analytics, importers, reporting, scaffold, store, sync
 from .config import Config, read_state, write_state
 from .schema import ValidationError, iso, normalize, now_iso, parse_ts, to_float
 
@@ -118,6 +118,8 @@ def filters_from(args: argparse.Namespace) -> dict[str, Any]:
 
 def maybe_refresh(cfg: Config, args: argparse.Namespace) -> dict[str, Any]:
     """Check the private repo for changes before a read or a write."""
+    if cfg.local_only:
+        return {"checked": False, "mode": "local", "reason": "local-only journal"}
     if getattr(args, "no_sync", False) or not cfg.initialized:
         return {"checked": False}
     if not cfg.check_remote_on_write:
@@ -145,15 +147,51 @@ def cmd_init(args: argparse.Namespace) -> int:
     if cfg.initialized and not args.force:
         status = sync.check(cfg)
         emit({"already_initialized": True, "repo": cfg.repo_slug, "status": status}, args,
-             f"已经初始化过了：{cfg.repo_slug}\n本地副本：{cfg.repo_dir}\n"
+             f"已经初始化过了：{cfg.repo_slug or 'local'}\n本地副本：{cfg.repo_dir}\n"
              f"{status.get('message', '')}\n（要换仓库请加 --force）")
+        return 0
+
+    if args.local:
+        if cfg.repo_dir.exists():
+            if not args.force:
+                raise CliError(f"{cfg.repo_dir} 已存在。加 --force 会删除它并重新初始化。")
+            shutil.rmtree(cfg.repo_dir)
+        cfg.repo_dir.mkdir(parents=True, exist_ok=True)
+        sync.run(["git", "init", "-b", "main", str(cfg.repo_dir)])
+        cfg.repo_slug = "local"
+        cfg.repo_url = ""
+        cfg.storage_mode = "local"
+        cfg.auto_push = False
+        cfg.check_remote_on_write = False
+        cfg.default_account = args.account or cfg.default_account
+        cfg.save()
+        written = scaffold.write_repo_scaffold(cfg.repo_dir)
+        store.write_manifest(cfg)
+        result = sync.commit_and_push(cfg, "chore: initialize local trading journal", push=False)
+        write_state(cfg, {"last_sync": now_iso(), "initialized_at": now_iso(),
+                          "mode": "local"})
+        payload = {
+            "repo": cfg.repo_slug,
+            "mode": "local",
+            "url": None,
+            "created": True,
+            "local": str(cfg.repo_dir),
+            "scaffold": written,
+            "commit": result,
+            "default_account": cfg.default_account,
+        }
+        emit(payload, args,
+             f"✓ 已初始化本地交易日志\n"
+             f"  本地仓库: {cfg.repo_dir}\n"
+             f"  默认账户: {cfg.default_account}\n\n"
+             f"下一步：tradegit log --symbol AAPL --side BUY --qty 100 --price 213.45 --why \"...\"")
         return 0
 
     auth = sync.auth_status()
     if not auth["connected"]:
         raise CliError(
             "没有检测到已连接的 GitHub 账户。任选一种方式连接后重试：\n"
-            "  1) gh auth login            （推荐，Claude Code / Codex 环境通常已装 gh）\n"
+            "  1) gh auth login            （推荐，Claude Code / Codex / Workbuddy 环境通常已装 gh）\n"
             "  2) export GITHUB_TOKEN=...  （需要 repo 权限的 Personal Access Token）\n"
             "TradeGit 不会保存你的 token，只调用宿主环境已有的凭证。")
 
@@ -186,6 +224,9 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     cfg.repo_slug = slug
     cfg.repo_url = f"https://github.com/{slug}"
+    cfg.storage_mode = "github"
+    cfg.auto_push = True
+    cfg.check_remote_on_write = True
     cfg.default_account = args.account or cfg.default_account
     cfg.save()
 
@@ -213,7 +254,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     cfg = Config.load()
     auth = sync.auth_status()
     payload: dict[str, Any] = {"version": __version__, "auth": auth,
-                               "home": str(cfg.home), "initialized": cfg.initialized}
+                               "home": str(cfg.home), "initialized": cfg.initialized,
+                               "mode": cfg.storage_mode}
     if not cfg.initialized:
         emit(payload, args, "未初始化。运行 tradegit init。")
         return 0
@@ -222,7 +264,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     records = store.load(cfg)
     matched = analytics.match_fifo(records)
     payload.update({
-        "repo": cfg.repo_slug, "url": cfg.repo_url, "sync": status,
+        "repo": cfg.repo_slug, "url": cfg.repo_url or None, "sync": status,
         "records": len(records),
         "first_ts": records[0]["ts"] if records else None,
         "last_ts": records[-1]["ts"] if records else None,
@@ -230,8 +272,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         "closed_roundtrips": len(matched["roundtrips"]),
         "accounts": sorted({r.get("account", "") for r in records}),
     })
+    repo_label = cfg.repo_slug if not cfg.local_only else "local-only"
+    url_label = f"  ({cfg.repo_url})" if cfg.repo_url else ""
     human = (
-        f"仓库      {cfg.repo_slug}  ({cfg.repo_url})\n"
+        f"仓库      {repo_label}{url_label}\n"
         f"本地      {cfg.repo_dir}\n"
         f"同步      {status.get('message')}\n"
         f"  local  {(status.get('local_head') or '')[:8]}   "
@@ -251,6 +295,9 @@ def cmd_check(args: argparse.Namespace) -> int:
     cfg = Config.load()
     require_init(cfg)
     status = sync.check(cfg)
+    if cfg.local_only:
+        emit(status, args, status.get("message", ""))
+        return 0
     if args.pull and not status["in_sync"] and status.get("remote_reachable"):
         status["pull"] = sync.pull(cfg)
         status = {**sync.check(cfg), "pull": status["pull"]}
@@ -261,12 +308,15 @@ def cmd_check(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     cfg = Config.load()
     auth = sync.auth_status()
+    github_needed = not cfg.initialized or not cfg.local_only
     checks = [
         ("git", bool(shutil.which("git")), "安装 git"),
-        ("gh CLI", auth["gh_cli"], "可选：brew install gh（创建仓库需要）"),
-        ("GitHub 已连接", auth["connected"], "gh auth login 或 export GITHUB_TOKEN=..."),
         ("已初始化", cfg.initialized, "tradegit init"),
     ]
+    if github_needed:
+        checks.insert(1, ("gh CLI", auth["gh_cli"], "可选：brew install gh（创建仓库需要）"))
+        checks.insert(2, ("GitHub 已连接", auth["connected"],
+                          "gh auth login 或 export GITHUB_TOKEN=...；或用 tradegit init --local"))
     if cfg.initialized:
         status = sync.check(cfg)
         checks.append(("远端可达", bool(status.get("remote_reachable")), "检查网络 / 凭证"))
@@ -577,6 +627,56 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    cfg = Config.load()
+    require_init(cfg)
+    refresh = maybe_refresh(cfg, args)
+    records = store.select(cfg, **filters_from(args))
+    result = analytics.summarize(records, marks=parse_marks(args.mark),
+                                 fx=parse_fx(getattr(args, "fx", None)),
+                                 base_currency=getattr(args, "base_currency", None))
+    result["sync"] = refresh
+    result["notes"] = analytics.review_prompts(result)
+
+    fmt = args.format
+    if args.markdown:
+        fmt = "md"
+    if args.pdf:
+        fmt = "pdf"
+    if args.markdown and args.pdf:
+        raise CliError("--markdown 和 --pdf 只能选一个。")
+    if fmt == "pdf" and not args.output:
+        raise CliError("生成 PDF 需要指定 --output <file.pdf>。")
+
+    markdown = reporting.render_markdown(
+        result,
+        since=parse_when(args.since) if args.since else None,
+        until=parse_when(args.until) if args.until else None,
+    )
+
+    output = Path(args.output).expanduser() if args.output else None
+    if fmt == "pdf":
+        assert output is not None
+        reporting.write_pdf(markdown, output)
+        payload = {"format": "pdf", "output": str(output), "records": len(records),
+                   "period": result["period"], "sync": refresh}
+        emit(payload, args, f"✓ 已生成 PDF 报告：{output}")
+        return 0
+
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(markdown, encoding="utf-8")
+        payload = {"format": "md", "output": str(output), "records": len(records),
+                   "period": result["period"], "sync": refresh}
+        emit(payload, args, f"✓ 已生成 Markdown 报告：{output}")
+        return 0
+
+    payload = {"format": "md", "markdown": markdown, "records": len(records),
+               "period": result["period"], "sync": refresh}
+    emit(payload, args, markdown)
+    return 0
+
+
 def _money(value: Any, signed: bool = True, digits: int = 2) -> str:
     """Money that may legitimately be unknown — never print a fabricated 0."""
     if value is None:
@@ -706,6 +806,15 @@ def cmd_sync(args: argparse.Namespace) -> int:
     cfg = Config.load()
     require_init(cfg)
     result: dict[str, Any] = {}
+    if cfg.local_only:
+        store.write_manifest(cfg)
+        result["commit"] = sync.commit_and_push(
+            cfg, args.message or "sync: local journal update", push=False)
+        result["status"] = sync.check(cfg)
+        emit(result, args,
+             f"本地账本：{result['commit'].get('message')}\n"
+             f"{result['status'].get('message')}")
+        return 0
     if not args.push_only:
         result["pull"] = sync.pull(cfg)
     if not args.pull_only:
@@ -766,15 +875,16 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="tradegit", description="GitHub 私有仓库交易日志")
+        prog="tradegit", description="Git-backed or local-only trading journal")
     parser.add_argument("--version", action="version", version=f"tradegit {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("init", help="连接 GitHub 并创建私有交易日志仓库")
+    p = sub.add_parser("init", help="创建交易日志仓库（GitHub 私有仓库或本地模式）")
     p.add_argument("--repo", help="owner/name；默认 <你的账号>/trading-journal")
     p.add_argument("--name", default="trading-journal", help="仓库名（默认 trading-journal）")
     p.add_argument("--account", help="默认账户名")
     p.add_argument("--use-existing", action="store_true", help="复用已存在的仓库")
+    p.add_argument("--local", action="store_true", help="只创建本地 git 仓库，不连接或推送 GitHub")
     p.add_argument("--force", action="store_true", help="删除本地副本并重新克隆")
     _add_common(p)
     p.set_defaults(func=cmd_init)
@@ -885,6 +995,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--base-currency", dest="base_currency", help="折算的基准币种，默认 USD")
     _add_common(p)
     p.set_defaults(func=cmd_analyze)
+
+    p = sub.add_parser("report", help="生成交易复盘报告（Markdown 或 PDF）")
+    _add_filters(p)
+    p.add_argument("--mark", action="append", help="AAPL=213.4，可重复，用于算浮动盈亏")
+    p.add_argument("--fx", action="append",
+                   help="汇率，如 HKD=0.128（1 HKD 折合多少基准币）")
+    p.add_argument("--base-currency", dest="base_currency", help="折算的基准币种，默认 USD")
+    p.add_argument("--format", choices=["md", "pdf"], default="md")
+    p.add_argument("--markdown", action="store_true", help="输出 Markdown（默认）")
+    p.add_argument("--pdf", action="store_true", help="输出 PDF；需要 --output")
+    p.add_argument("--output", "-o", help="写入文件路径；.md 或 .pdf")
+    _add_common(p)
+    p.set_defaults(func=cmd_report)
 
     p = sub.add_parser("roundtrips", help="平仓明细（FIFO 配对）")
     _add_filters(p)

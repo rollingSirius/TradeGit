@@ -64,6 +64,12 @@ tradegit analyze --fx HKD=0.128 --base-currency USD --json
 # 过去 90 天整体表现
 tradegit analyze --since 90d --json
 
+# 过去 90 天 Markdown 复盘报告
+tradegit report --since 90d --markdown
+
+# 过去 180 天 PDF 复盘报告
+tradegit report --since 180d --pdf --output review.pdf
+
 # 今年哪个标的亏最多（分组结果按净盈亏升序，亏损在最前）
 tradegit analyze --since ytd --group-by symbol --json
 
@@ -152,8 +158,8 @@ tradegit amend <id> --review "回调买入没有配合量能确认，属于接�
 
 ## 可视化交给别的组件
 
-TradeGit **不生成图表、报告文件或面板**——它只负责把数字算对。需要可视化时，取
-`--json` 数据再交给合适的渲染组件：
+TradeGit 可以生成确定性的 Markdown/PDF 复盘报告，但**不生成图表或交互面板**——它
+只负责把数字算对。需要可视化时，取 `--json` 数据再交给合适的渲染组件：
 
 | 输出 | 适合画什么 |
 |---|---|

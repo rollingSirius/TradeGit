@@ -11,7 +11,7 @@
 
 交易日志是典型的**只追加、按时间查询、体量小**的负载：一个交易频繁的人一年也就
 几千行，十年不到十万行——纯扫描只要几十毫秒。Parquet/SQLite 的列存优势在这个量级
-体现不出来，而它们的二进制性质会让 git 历史完全失去可读性（这恰恰是"用 GitHub
+体现不出来，而它们的二进制性质会让 git 历史完全失去可读性（这恰恰是"用 git
 做交易日志"的核心价值：`git log -p` 能看到每一次修改）。
 
 所以：**JSONL 是唯一真相，SQLite 只是本地派生的查询加速器。**
@@ -26,16 +26,23 @@ manifest.json                 ← 派生，进 git（方便人和别的工具看
 按**月**分片而不是按年或按天：一个月的文件在 GitHub 网页上打开还能读，而按天会
 产生几百个碎文件。
 
-## 本地存储 = 私有仓库的 clone
+## 本地存储 = git 仓库
 
-本地目录 `~/.tradegit/repo/` 就是那个 GitHub 私有仓库的 git clone。这个选择让
-"本地缓存"和"远端"的一致性问题变成 git 已经解决过的问题：
+TradeGit 支持两种模式：
 
-- 「远端有没有变动」= `git ls-remote origin <branch>` 和本地 HEAD 比对，
+| 模式 | 本地目录 | 远端 |
+|---|---|---|
+| Git-backed private repo | `~/.tradegit/repo/` 是 GitHub 私有仓库 clone | GitHub private repo |
+| Local-only | `~/.tradegit/repo/` 是普通本地 git 仓库 | 无 remote |
+
+这个选择让"日志历史"和"多设备一致性"尽量交给 git 解决：
+
+- GitHub 模式下「远端有没有变动」= `git ls-remote origin <branch>` 和本地 HEAD 比对，
   **不需要拉取任何对象**，几十毫秒，所以每个命令都能默认跑一次
 - 「拉取变动」= `git pull --rebase --autostash`
 - 「历史版本」= `git log`，不用自己实现
-- 「另一台机器也在记」= 两边都 append，`merge=union` 自动合并
+- 「另一台机器也在记」= GitHub 模式下两边都 append，`merge=union` 自动合并
+- 「完全本地」= `tradegit init --local` 后只在本机 commit，不检查远端、不 push
 
 ### 冲突处理
 
@@ -58,7 +65,7 @@ manifest.json -merge
 `store.fingerprint()` 由所有 JSONL 文件的**文件名 + 大小 + mtime** 组成。查询前
 比对指纹，不一致就整表重建。重建一万条记录大约几十毫秒，所以没做增量。
 
-`git pull` 改动了文件 → mtime 变 → 指纹变 → 下次查询自动重建。不需要手动刷新。
+`git pull` 或本地写入改动了文件 → mtime 变 → 指纹变 → 下次查询自动重建。不需要手动刷新。
 
 ## 去重
 
@@ -95,14 +102,15 @@ TradeGit **不存储任何 token**。它按顺序使用宿主环境已有的凭�
 2. `GITHUB_TOKEN` / `GH_TOKEN` 环境变量
 3. git 自身的 credential helper
 
-`init` 会检查仓库可见性，非 private 直接拒绝。
+GitHub 模式下 `init` 会检查仓库可见性，非 private 直接拒绝。local-only 模式不需要
+GitHub 认证，也不会存储或使用 token。
 
 ## 目录总览
 
 ```
 ~/.tradegit/
-  config.json              仓库 slug、默认账户、是否自动 push
-  repo/                    私有仓库的 git clone（真实数据）
+  config.json              storage_mode、仓库 slug、默认账户、是否自动 push
+  repo/                    git 仓库（GitHub clone 或 local-only，真实数据）
     journal/<YYYY>/<YYYY-MM>.jsonl
     manifest.json
     schema/trade.schema.json
@@ -113,7 +121,8 @@ TradeGit **不存储任何 token**。它按顺序使用宿主环境已有的凭�
   imports/                 --keep-source 时保留的原始券商文件
 ```
 
-换机器只要重跑 `tradegit init --repo <owner>/<name> --use-existing`，
-全部历史随 clone 回来。
+GitHub 模式换机器只要重跑 `tradegit init --repo <owner>/<name> --use-existing`，
+全部历史随 clone 回来。local-only 模式没有远端，备份和迁移需要你自己复制或给本地
+仓库添加 remote。
 
 用 `TRADEGIT_HOME` 环境变量可以改根目录（测试和多套账本时有用）。

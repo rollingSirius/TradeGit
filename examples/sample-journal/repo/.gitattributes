@@ -1,0 +1,4 @@
+# Append-only journal files: union merge resolves concurrent appends
+# from two machines without a manual conflict resolution step.
+*.jsonl merge=union
+manifest.json -merge
