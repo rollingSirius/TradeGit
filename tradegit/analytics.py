@@ -272,10 +272,23 @@ def _convert(trip: dict[str, Any], rate: float) -> dict[str, Any]:
     return converted
 
 
+def _within_window(ts: str, since: str | None, until: str | None) -> bool:
+    if since and ts < since:
+        return False
+    if until and ts > until:
+        return False
+    return True
+
+
 def summarize(records: list[dict[str, Any]], *, marks: dict[str, float] | None = None,
               fx: dict[str, float] | None = None,
-              base_currency: str | None = None) -> dict[str, Any]:
-    """Full performance report over an already-filtered record set.
+              base_currency: str | None = None,
+              since: str | None = None,
+              until: str | None = None) -> dict[str, Any]:
+    """Full performance report over a record set, optionally windowed.
+
+    FIFO always needs the historical entry lots, so ``since`` filters closed
+    round trips by exit time and cash events by event time after matching.
 
     Money in different currencies is never silently added up. With a single
     currency this behaves as you'd expect. With several:
@@ -286,12 +299,16 @@ def summarize(records: list[dict[str, Any]], *, marks: dict[str, float] | None =
       real numbers live in ``by_currency`` — a wrong total is worse than no
       total in a P&L tool.
     """
+    records = sorted(records, key=lambda r: (r.get("ts", ""), r.get("id", "")))
     matched = match_fifo(records)
-    trips = matched["roundtrips"]
+    trips = [t for t in matched["roundtrips"]
+             if _within_window(t.get("exit_ts", ""), since, until)]
     positions = matched["open_positions"]
     marks = {k.upper(): float(v) for k, v in (marks or {}).items()}
     rates = {k.upper(): float(v) for k, v in (fx or {}).items()}
-    cash_records = [r for r in records if r.get("kind") == "cash"]
+    cash_records = [r for r in records
+                    if r.get("kind") == "cash" and _within_window(r.get("ts", ""), since, until)]
+    period_records = [r for r in records if _within_window(r.get("ts", ""), since, until)]
 
     currencies = sorted({t["currency"] for t in trips}
                         | {(r.get("currency") or "").upper() for r in cash_records}
@@ -299,9 +316,9 @@ def summarize(records: list[dict[str, Any]], *, marks: dict[str, float] | None =
     currencies = [c for c in currencies if c]
 
     period = {
-        "from": records[0]["ts"] if records else None,
-        "to": records[-1]["ts"] if records else None,
-        "records": len(records),
+        "from": since or (period_records[0]["ts"] if period_records else None),
+        "to": until or (period_records[-1]["ts"] if period_records else None),
+        "records": len(period_records),
     }
 
     def block(subset_trips, subset_cash, subset_positions):

@@ -104,10 +104,19 @@ def require_init(cfg: Config) -> None:
         raise CliError("TradeGit 尚未初始化。先运行：tradegit init")
 
 
-def filters_from(args: argparse.Namespace) -> dict[str, Any]:
+def time_filters_from(args: argparse.Namespace) -> dict[str, str | None]:
     return {
         "since": parse_when(getattr(args, "since", None)),
         "until": parse_when(getattr(args, "until", None)),
+    }
+
+
+def filters_from(args: argparse.Namespace, *, include_since: bool = True,
+                 include_until: bool = True) -> dict[str, Any]:
+    times = time_filters_from(args)
+    return {
+        "since": times["since"] if include_since else None,
+        "until": times["until"] if include_until else None,
         "symbol": getattr(args, "symbol", None),
         "account": getattr(args, "account", None),
         "broker": getattr(args, "broker", None),
@@ -136,6 +145,22 @@ def push_after_write(cfg: Config, args: argparse.Namespace, message: str) -> dic
     return sync.commit_and_push(cfg, message)
 
 
+def require_git_writable(cfg: Config) -> None:
+    if cfg.local_only and not cfg.git_initialized:
+        raise CliError(
+            "当前 local-only journal 没有 .git，可能是 examples/sample-journal 这类只读样例。"
+            "请先运行 tradegit init --local 创建可写本地账本。")
+
+
+def remove_repo_dir_for_force(cfg: Config) -> None:
+    target = cfg.repo_dir
+    if not target.exists():
+        return
+    if target.is_symlink() or target.name != "repo" or target.parent != cfg.home:
+        raise CliError(f"refusing to delete unexpected repo path: {target}")
+    shutil.rmtree(target)
+
+
 # ---------------------------------------------------------------------------
 # init / status / doctor
 # ---------------------------------------------------------------------------
@@ -155,7 +180,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         if cfg.repo_dir.exists():
             if not args.force:
                 raise CliError(f"{cfg.repo_dir} 已存在。加 --force 会删除它并重新初始化。")
-            shutil.rmtree(cfg.repo_dir)
+            remove_repo_dir_for_force(cfg)
         cfg.repo_dir.mkdir(parents=True, exist_ok=True)
         sync.run(["git", "init", "-b", "main", str(cfg.repo_dir)])
         cfg.repo_slug = "local"
@@ -219,7 +244,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if cfg.repo_dir.exists():
         if not args.force:
             raise CliError(f"{cfg.repo_dir} 已存在。加 --force 会删除它并重新克隆。")
-        shutil.rmtree(cfg.repo_dir)
+        remove_repo_dir_for_force(cfg)
     sync.clone(slug, cfg.repo_dir)
 
     cfg.repo_slug = slug
@@ -388,6 +413,7 @@ def cmd_log(args: argparse.Namespace) -> int:
              json.dumps(records, ensure_ascii=False, indent=2))
         return 0
 
+    require_git_writable(cfg)
     result = store.append(cfg, records, skip_duplicates=not args.allow_duplicates)
     if not result["written"]:
         emit({"written": 0, "skipped": len(result["skipped"]), "sync": refresh}, args,
@@ -456,6 +482,7 @@ def cmd_import(args: argparse.Namespace) -> int:
         emit({**preview, "written": 0}, args, _import_human(preview, dry=False))
         return 0
 
+    require_git_writable(cfg)
     if args.keep_source:
         cfg.imports_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, cfg.imports_dir / f"{now_iso().replace(':', '')}-{path.name}")
@@ -504,6 +531,7 @@ def cmd_amend(args: argparse.Namespace) -> int:
     """Append a corrected copy of a record (the original stays in git history)."""
     cfg = Config.load()
     require_init(cfg)
+    require_git_writable(cfg)
     maybe_refresh(cfg, args)
     records = {r["id"]: r for r in store.load(cfg)}
     original = records.get(args.id)
@@ -543,6 +571,7 @@ def cmd_amend(args: argparse.Namespace) -> int:
 def cmd_void(args: argparse.Namespace) -> int:
     cfg = Config.load()
     require_init(cfg)
+    require_git_writable(cfg)
     maybe_refresh(cfg, args)
     records = {r["id"]: r for r in store.load(cfg)}
     if args.id not in records:
@@ -588,7 +617,7 @@ def cmd_positions(args: argparse.Namespace) -> int:
     cfg = Config.load()
     require_init(cfg)
     maybe_refresh(cfg, args)
-    records = store.select(cfg, **filters_from(args))
+    records = store.select(cfg, **filters_from(args, include_since=False))
     marks = parse_marks(args.mark)
     result = analytics.summarize(records, marks=marks,
                                  fx=parse_fx(getattr(args, "fx", None)),
@@ -609,10 +638,12 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     cfg = Config.load()
     require_init(cfg)
     refresh = maybe_refresh(cfg, args)
-    records = store.select(cfg, **filters_from(args))
+    times = time_filters_from(args)
+    records = store.select(cfg, **filters_from(args, include_since=False))
     result = analytics.summarize(records, marks=parse_marks(args.mark),
                                  fx=parse_fx(getattr(args, "fx", None)),
-                                 base_currency=getattr(args, "base_currency", None))
+                                 base_currency=getattr(args, "base_currency", None),
+                                 since=times["since"], until=times["until"])
     result["sync"] = refresh
     result["notes"] = analytics.review_prompts(result)
 
@@ -631,10 +662,12 @@ def cmd_report(args: argparse.Namespace) -> int:
     cfg = Config.load()
     require_init(cfg)
     refresh = maybe_refresh(cfg, args)
-    records = store.select(cfg, **filters_from(args))
+    times = time_filters_from(args)
+    records = store.select(cfg, **filters_from(args, include_since=False))
     result = analytics.summarize(records, marks=parse_marks(args.mark),
                                  fx=parse_fx(getattr(args, "fx", None)),
-                                 base_currency=getattr(args, "base_currency", None))
+                                 base_currency=getattr(args, "base_currency", None),
+                                 since=times["since"], until=times["until"])
     result["sync"] = refresh
     result["notes"] = analytics.review_prompts(result)
 
@@ -650,8 +683,8 @@ def cmd_report(args: argparse.Namespace) -> int:
 
     markdown = reporting.render_markdown(
         result,
-        since=parse_when(args.since) if args.since else None,
-        until=parse_when(args.until) if args.until else None,
+        since=times["since"],
+        until=times["until"],
     )
 
     output = Path(args.output).expanduser() if args.output else None
@@ -756,8 +789,10 @@ def cmd_roundtrips(args: argparse.Namespace) -> int:
     cfg = Config.load()
     require_init(cfg)
     maybe_refresh(cfg, args)
-    records = store.select(cfg, **filters_from(args))
-    trips = analytics.match_fifo(records)["roundtrips"]
+    times = time_filters_from(args)
+    records = store.select(cfg, **filters_from(args, include_since=False))
+    trips = analytics.summarize(records, since=times["since"],
+                                until=times["until"])["roundtrips"]
     if args.sort == "pnl":
         trips.sort(key=lambda t: t["net_pnl"])
     elif args.sort == "return":

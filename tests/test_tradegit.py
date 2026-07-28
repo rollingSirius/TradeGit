@@ -184,6 +184,27 @@ class TestAnalytics(unittest.TestCase):
         marked = analytics.summarize(records, marks={"AAPL": 220})
         self.assertAlmostEqual(marked["metrics"]["unrealized_pnl"], 2000.0)
 
+    def test_since_filters_closed_trips_after_fifo_matching(self):
+        records = [
+            trade("AAPL", "BUY", 100, 100, "2026-01-01T00:00:00Z"),
+            trade("AAPL", "SELL", 100, 120, "2026-07-01T00:00:00Z"),
+        ]
+        result = analytics.summarize(records, since="2026-06-01T00:00:00Z")
+        self.assertEqual(result["metrics"]["roundtrips"], 1)
+        self.assertAlmostEqual(result["metrics"]["realized_pnl"], 2000.0)
+        self.assertEqual(result["open_positions"], [])
+
+    def test_since_excludes_pre_window_closed_trips(self):
+        records = [
+            trade("MSFT", "BUY", 10, 100, "2026-01-01T00:00:00Z"),
+            trade("MSFT", "SELL", 10, 110, "2026-02-01T00:00:00Z"),
+            trade("MSFT", "BUY", 10, 120, "2026-03-01T00:00:00Z"),
+            trade("MSFT", "SELL", 10, 130, "2026-07-01T00:00:00Z"),
+        ]
+        result = analytics.summarize(records, since="2026-06-01T00:00:00Z")
+        self.assertEqual(result["metrics"]["roundtrips"], 1)
+        self.assertAlmostEqual(result["metrics"]["realized_pnl"], 100.0)
+
 
 class TestImporters(unittest.TestCase):
     def test_ibkr_activity_statement(self):
@@ -674,6 +695,53 @@ class TestLocalModeCli(unittest.TestCase):
 
         report = self.run_cli("report", "--since", "30d", "--json")
         self.assertIn("TradeGit keeps the facts", report["markdown"])
+
+    def test_since_report_and_roundtrips_keep_pre_window_fifo_basis(self):
+        self.run_cli("init", "--local", "--account", "paper", "--json")
+        self.run_cli("log", "--symbol", "AAPL", "--side", "BUY", "--qty", "100",
+                     "--price", "100", "--at", "2026-01-01T00:00:00Z",
+                     "--why", "entry", "--json")
+        self.run_cli("log", "--symbol", "AAPL", "--side", "SELL", "--qty", "100",
+                     "--price", "120", "--at", "2026-07-01T00:00:00Z",
+                     "--why", "exit", "--json")
+
+        analyze = self.run_cli("analyze", "--since", "2026-06-01T00:00:00Z", "--json")
+        self.assertEqual(analyze["metrics"]["roundtrips"], 1)
+        self.assertAlmostEqual(analyze["metrics"]["realized_pnl"], 2000.0)
+        self.assertEqual(analyze["open_positions"], [])
+
+        trips = self.run_cli("roundtrips", "--since", "2026-06-01T00:00:00Z", "--json")
+        self.assertEqual(trips["count"], 1)
+        self.assertAlmostEqual(trips["roundtrips"][0]["net_pnl"], 2000.0)
+
+        report = self.run_cli("report", "--since", "2026-06-01T00:00:00Z", "--json")
+        self.assertIn("2,000.00", report["markdown"])
+
+    def test_local_only_journal_without_git_refuses_writes(self):
+        repo = self.home / "repo"
+        journal = repo / "journal" / "2026"
+        journal.mkdir(parents=True)
+        (self.home / "config.json").write_text(json.dumps({
+            "repo_slug": "local",
+            "storage_mode": "local",
+            "auto_push": False,
+            "check_remote_on_write": False,
+        }))
+
+        out = self.run_cli("log", "--symbol", "AAPL", "--side", "BUY", "--qty", "1",
+                           "--price", "100", "--why", "sample write", "--json", expect=2)
+        self.assertIn("没有 .git", out["error"])
+        self.assertFalse((journal / "2026-07.jsonl").exists())
+
+    def test_force_init_refuses_to_delete_symlinked_repo(self):
+        target = Path(self.tmp.name) / "important"
+        target.mkdir()
+        self.home.mkdir(parents=True)
+        os.symlink(target, self.home / "repo")
+
+        out = self.run_cli("init", "--local", "--force", "--json", expect=2)
+        self.assertIn("refusing to delete unexpected repo path", out["error"])
+        self.assertTrue(target.exists())
 
 
 if __name__ == "__main__":
