@@ -24,8 +24,8 @@ deliberately goes one step further:
 | Records the **reasoning**, not just the fill | Thesis, stop/target, conviction, emotion and strategy tags are first-class fields; if you leave the thesis out, the assistant asks for it. |
 | The data is yours | Two modes: a Git-backed private repo, or a fully local-only git repo with no remote. |
 | Every revision is preserved | Records are append-only: a correction writes a new version, a deletion writes a tombstone. `git log -p` shows what you thought then and how you revised it. |
-| Broker statements import directly | IBKR (Activity Statement / Flex Query) and Charles Schwab, including dividends, interest and fees. Re-importing the same file is idempotent, and rows that can't be inferred safely stop and ask you. |
-| P&L you can trust | FIFO lot matching, net of fees, handling shorts, partial exits, position flips and option multipliers. Tests cross-check the numbers against IBKR's own `Realized P/L` column. |
+| Broker statements import directly | TradeGit is broker-neutral: built-in parsers cover common export formats, and generic CSV / JSON work too. Re-importing the same file is idempotent, and rows that can't be inferred safely stop and ask you. |
+| P&L you can trust | P&L is computed by TradeGit's deterministic rules from recorded fills, fees, directions, partial exits, position flips and option multipliers; it does not depend on external lot-matching output. |
 | Honest about currencies | A mixed HK/US book never has HKD added to USD. Either it reports per currency, or you supply the rates — it will not hand you a plausible-looking wrong number. |
 | Review gives facts, not advice | It surfaces falsifiable observations like "losers held 34 days on average vs 21 for winners" — never a buy or sell recommendation. |
 | Reports are portable | `tradegit report --since 90d --markdown` writes Markdown; `--pdf --output review.pdf` writes a PDF. |
@@ -64,7 +64,7 @@ sync; local-only is best when you want to start on one machine without connectin
 - [First-time setup](#first-time-setup)
 - [Daily use](#daily-use)
 - [Command reference](#command-reference)
-- [Supported brokers](#supported-brokers)
+- [Import formats](#import-formats)
 - [How the data is stored](#how-the-data-is-stored)
 - [How P&L is calculated](#how-pl-is-calculated)
 - [Sync and multiple machines](#sync-and-multiple-machines)
@@ -80,7 +80,7 @@ sync; local-only is best when you want to start on one machine without connectin
 **Does**
 
 - Records every trade along with **the reason at the time**, stop/target, conviction, emotion, tags
-- Imports IBKR / Schwab statements, deduplicated and normalized to one schema
+- Imports broker statement exports / CSV / JSON, deduplicated and normalized to one schema
 - Syncs through a private GitHub repo, or stays fully local
 - FIFO lot matching for realized P&L, win rate, profit factor, expectancy, max drawdown, R-multiples
 - Lets you append a post-mortem and a named mistake later; `git log -p` shows the whole evolution
@@ -303,22 +303,26 @@ Add `-h` to any command for its full options.
 
 ---
 
-## Supported brokers
+## Import formats
 
-| Broker | Export |
+TradeGit is not tied to any broker. Built-in parsers simply reduce field-mapping
+work; anything that can be exported as CSV / JSON can be normalized into the same
+journal schema.
+
+| Source | Export |
 |---|---|
-| **Interactive Brokers** | Activity Statement CSV, Flex Query CSV |
-| **Charles Schwab** | Accounts → History → Export, Transactions CSV |
-| Anything else | Generic CSV (fuzzy column matching), JSON / JSONL |
+| Built-in parsers | Common Activity / Transactions / Flex Query CSV formats |
+| Generic tables | Generic CSV with fuzzy column matching |
+| Structured records | JSON / JSONL |
 
-Export steps, field mappings and known gotchas (IBKR's `ClosedLot` rows, Schwab's
-`as of` dates) are in [`reference/brokers.md`](reference/brokers.md).
+Export steps, field mappings and known gotchas are in
+[`reference/brokers.md`](reference/brokers.md).
 
 Imports also capture **cash events** — dividends, interest, withholding tax, account
 fees, deposits and withdrawals. Dropping those skews P&L.
 
-To add a broker: copy the shape of `tradegit/importers/schwab.py` and register it in
-`REGISTRY` in `tradegit/importers/__init__.py`.
+To add a formal import format: copy the shape of an existing importer and register
+it in `REGISTRY` in `tradegit/importers/__init__.py`.
 
 ---
 
@@ -386,7 +390,9 @@ Metrics: realized P&L, win rate, profit factor, expectancy, average win/loss, la
 win/loss, max drawdown, win/loss streaks, average hold days, average R. Groupable by
 symbol / month / strategy / tag / direction.
 
-Tests cross-check the engine against IBKR's own `Realized P/L` column.
+Every metric is computed from recorded fills, fees, cash events and risk fields.
+Imported files provide raw facts; broker-side lot matching is not used as the
+calculation source.
 
 ---
 
@@ -467,9 +473,8 @@ Multiple journals: switch roots with the `TRADEGIT_HOME` environment variable.
 python3 -m unittest tests.test_tradegit -v
 ```
 
-43 tests, covering field normalization, FIFO (long/short/partial exit/position
-flip/option multiplier), all three broker parsers, storage dedup and index refresh,
-the credential-safety guarantees, and a full CLI end-to-end run against a local bare
+The tests cover field normalization, P&L calculation, import parsers, storage dedup
+and index refresh, the credential-safety guarantees, and a full CLI end-to-end run against a local bare
 repo standing in for GitHub (log → dedup → import → analyze → amend → detect a remote
 change and pull → push commits left behind while offline).
 
